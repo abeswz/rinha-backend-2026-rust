@@ -1,11 +1,22 @@
 from app.schemas.transaction import Transaction
 
+MAX_AMOUNT = 10_000
+
 
 def vector_transaction(transaction: Transaction) -> list[float]:
-    return [0.0, 1.0]
+    amount_dimession = _vector_amount(t=transaction)
+    return [amount_dimession, 1.0]
 
 
-# 0 	amount 	limitar(transaction.amount / max_amount)
+def _vector_amount(t: Transaction) -> float:
+    amount = t.transaction.amount
+    if amount <= 0:
+        return -1
+
+    return amount / MAX_AMOUNT
+
+
+# 0 	amount 	limitar(transaction.amount / max_amount) ✅️
 # 1 	installments 	limitar(transaction.installments / max_installments)
 # 2 	amount_vs_avg 	limitar((transaction.amount / customer.avg_amount) / amount_vs_avg_ratio)
 # 3 	hour_of_day 	hora(transaction.requested_at) / 23 (0-23, UTC)

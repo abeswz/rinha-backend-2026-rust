@@ -15,3 +15,7 @@ dev = [
     "requests>=2.33.1",
     "ruff>=0.15.12",
 ]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["test"]
