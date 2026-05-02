@@ -1,18 +1,12 @@
 from app.schemas.fraud_score import FraudScore
 from app.schemas.transaction import Transaction
+from app.service.score import process_score
+from app.service.vector import vector_transaction, vector_transaction_search
 
 
 async def transaction_fraud_score(transaction: Transaction) -> FraudScore | None:
-    amount_vector = transaction_vector_amount(transaction)
-    print(f"amount: {amount_vector}")
-    return FraudScore(approved=True, fraud_score=100.0)
+    vector = vector_transaction(transaction=transaction)
+    nn_transactions = vector_transaction_search(transaction=transaction, vector=vector)
+    score = process_score(transaction=transaction, similar_transactions=nn_transactions)
 
-
-# TODO: Fix this part and add real vector validation this is just a validation process
-# try to understand manual vectoring data
-def transaction_vector_amount(transaction: Transaction) -> list[float]:
-    max_amount = 1_000.0
-
-    amount_feature = min(transaction.transaction.amount / max_amount, 1.0)
-
-    return [amount_feature]
+    return score
