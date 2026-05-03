@@ -2,11 +2,15 @@ from app.schemas.transaction import Transaction
 
 MAX_AMOUNT = 10_000.0
 MAX_INSTALLMENTS = 12.0
+AMOUNT_VS_AVG_RATIO = 10
 
 
 def vector_transaction(transaction: Transaction) -> list[float]:
     amount_dimession = _vector_amount(t=transaction)
-    return [amount_dimession, 1.0]
+    installment = _vector_installment(t=transaction)
+    average_ratio = _vector_amount_avg(t=transaction)
+
+    return [amount_dimession, installment, average_ratio]
 
 
 def _vector_amount(t: Transaction) -> float:
@@ -14,14 +18,39 @@ def _vector_amount(t: Transaction) -> float:
     if amount <= 0:
         return -1
 
-    return amount / MAX_AMOUNT
+    return _vector_limitation_value(amount / MAX_AMOUNT)
 
 
 def _vector_installment(t: Transaction) -> float:
     installments = t.transaction.installments
     if installments <= 0:
         return -1
-    return installments / MAX_INSTALLMENTS
+
+    return _vector_limitation_value(installments / MAX_INSTALLMENTS)
+
+
+def _vector_amount_avg(t: Transaction) -> float:
+    amount = t.transaction.amount
+    customer_average_amount = t.customer.avg_amount
+
+    if amount <= 0:
+        return -1
+
+    if customer_average_amount <= 0:
+        return -1
+
+    vector = (amount / customer_average_amount) / AMOUNT_VS_AVG_RATIO
+    return _vector_limitation_value(vector)
+
+
+def _vector_limitation_value(value: float) -> float:
+    if value < 0.0:
+        return 0.0
+
+    if value > 1.0:
+        return 1.0
+
+    return value
 
 
 # 0 	amount 	limitar(transaction.amount / max_amount) ✅️
