@@ -3,7 +3,7 @@ REFS_BIN := resources/refs.bin
 PORT     := 9999
 READY_URL := http://localhost:$(PORT)/ready
 
-.PHONY: all build preprocess up down dev smoke load test clean help
+.PHONY: all build preprocess up down dev smoke load test clean doc help
 
 all: help
 
@@ -16,6 +16,7 @@ help:
 	@echo "  make load     Run k6 load test (54k transactions, 120s ramp)"
 	@echo "  make build    cargo build --release"
 	@echo "  make preprocess  Generate resources/refs.bin from references.json.gz"
+	@echo "  make doc      Open rustdoc in browser (cargo doc --open)"
 	@echo "  make clean    Remove build artifacts"
 
 # ── Build ──────────────────────────────────────────────────────────────────
@@ -62,6 +63,9 @@ load:
 	k6 run test/test.js
 
 # ── Misc ───────────────────────────────────────────────────────────────────
+
+doc:
+	cargo doc --open
 
 clean:
 	cargo clean

@@ -110,30 +110,39 @@ test/
 - Docker + Docker Compose (para rodar via contêiner)
 - k6 (para testes de carga)
 
-### Compilar e rodar localmente
+### Makefile
+
+Todos os fluxos comuns estão cobertos pelo `Makefile`:
+
+| Comando | O que faz |
+|---------|-----------|
+| `make up` | Build da imagem Docker + `docker compose up -d` + aguarda `/ready` |
+| `make down` | Para o docker compose |
+| `make dev` | Compila e roda uma instância local direto na porta 9999 (sem Docker) |
+| `make smoke` | Executa o smoke test k6 (5 requests, valida JSON/campos) |
+| `make load` | Executa o load test k6 completo (54k transações, 120s de rampa) |
+| `make build` | `cargo build --release` |
+| `make preprocess` | Gera `resources/refs.bin` a partir de `references.json.gz` |
+| `make doc` | Abre a documentação Rust gerada pelo `cargo doc` no browser |
+| `make clean` | Remove artefatos de build |
+
+#### Fluxo com Docker (stack completa)
 
 ```bash
-# Gerar refs.bin (necessário apenas uma vez)
-cargo run --bin preprocess
-
-# Rodar o servidor
-cargo run --release
-
-# Ou com variáveis customizadas
-PORT=3000 \
-REFS_PATH=resources/refs.bin \
-MCC_PATH=resources/mcc_risk.json \
-NORM_PATH=resources/normalization.json \
-cargo run --release
+make up      # build + sobe nginx:9999 → api1:3000 + api2:3000
+make smoke   # valida que está respondendo
+make load    # executa o load test completo
+make down    # para tudo
 ```
 
-### Rodar com Docker Compose
+#### Fluxo local sem Docker
 
 ```bash
-docker compose up --build
+make dev     # em um terminal (instância única na porta 9999)
+make smoke   # em outro terminal
 ```
 
-Isso sobe dois servidores (`api1`, `api2`) e um nginx na porta `9999` fazendo round-robin entre eles.
+`make up` e `make dev` rodam `make preprocess` automaticamente se `resources/refs.bin` não existir.
 
 ### Variáveis de ambiente
 
