@@ -109,6 +109,9 @@ impl IvfIndex {
         for &(_, ci) in &centroid_dists[..nprobe] {
             for (vec, label) in &self.lists[ci] {
                 let dist = vec_sq_dist(query, vec);
+                if dist.is_nan() {
+                    continue;
+                }
                 let dist_bits = dist.to_bits();
                 if top.len() < k {
                     let pos = top.partition_point(|&(d, _)| d <= dist_bits);
@@ -242,6 +245,44 @@ mod tests {
         let path = std::env::temp_dir().join("test_ivf_truncated.bin");
         std::fs::write(&path, [0u8; 4]).unwrap();
         assert!(IvfIndex::load(&path, 1).is_err());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_knn_nprobe_clamped_to_k() {
+        let path = write_tiny_ivf("test_ivf_clamp");
+        let idx = IvfIndex::load(&path, 999).unwrap(); // nprobe >> K
+        let query = [0.0f32; 14];
+        let labels = idx.knn(&query, 3);
+        assert_eq!(labels.len(), 3);
+        // With nprobe clamped to K=2, probes both clusters; nearest are legit
+        assert!(labels.iter().all(|&l| l == 0), "top-3 should be legit");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_knn_mixed_labels_ordered_by_distance() {
+        let path = write_tiny_ivf("test_ivf_mixed");
+        // nprobe=2: probes both clusters
+        // Cluster 0 (near [0.0;14]): 3 legit vectors at ~0.1
+        // Cluster 1 (near [10.0;14]): 3 fraud vectors at ~10.0
+        // Query at [0.0;14]: top-5 should be: 3 legit (close) then 2 fraud (far)
+        let idx = IvfIndex::load(&path, 2).unwrap();
+        let query = [0.0f32; 14];
+        let labels = idx.knn(&query, 5);
+        assert_eq!(labels.len(), 5);
+        // First 3 should be legit (closer), last 2 should be fraud (farther)
+        let legit_count = labels.iter().filter(|&&l| l == 0).count();
+        let fraud_count = labels.iter().filter(|&&l| l == 1).count();
+        assert_eq!(legit_count, 3);
+        assert_eq!(fraud_count, 2);
+        // Verify order: all legit come before any fraud
+        let first_fraud_pos = labels.iter().position(|&l| l == 1).unwrap_or(5);
+        let last_legit_pos = labels.iter().rposition(|&l| l == 0).unwrap_or(0);
+        assert!(
+            last_legit_pos < first_fraud_pos,
+            "all legit neighbors should rank before fraud neighbors"
+        );
         std::fs::remove_file(&path).ok();
     }
 }
