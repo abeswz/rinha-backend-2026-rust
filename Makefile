@@ -1,23 +1,23 @@
 BINARY   := target/release/fraud-detection
-REFS_BIN := resources/refs.bin
+IVF_BIN  := resources/ivf_index.bin
 PORT     := 9999
 READY_URL := http://localhost:$(PORT)/ready
 
-.PHONY: all build preprocess up down dev smoke load test clean doc help
+.PHONY: all build ivf up down dev smoke load test clean doc help
 
 all: help
 
 help:
 	@echo "Targets:"
-	@echo "  make up       Build image + start docker compose (nginx:9999 → api1+api2)"
-	@echo "  make down     Stop docker compose"
-	@echo "  make dev      Run single local instance on port 9999 (no Docker)"
-	@echo "  make smoke    Run k6 smoke test (5 requests)"
-	@echo "  make load     Run k6 load test (54k transactions, 120s ramp)"
-	@echo "  make build    cargo build --release"
-	@echo "  make preprocess  Generate resources/refs.bin from references.json.gz"
-	@echo "  make doc      Open rustdoc in browser (cargo doc --open)"
-	@echo "  make clean    Remove build artifacts"
+	@echo "  make up    Build image + start docker compose (nginx:9999 → api1+api2)"
+	@echo "  make down  Stop docker compose"
+	@echo "  make dev   Run single local instance on port 9999 (no Docker)"
+	@echo "  make ivf   Generate resources/ivf_index.bin via Python (3-8 min)"
+	@echo "  make smoke Run k6 smoke test (5 requests)"
+	@echo "  make load  Run k6 load test (54k transactions, 120s ramp)"
+	@echo "  make build cargo build --release"
+	@echo "  make doc   Open rustdoc in browser (cargo doc --open)"
+	@echo "  make clean Remove build artifacts"
 
 # ── Build ──────────────────────────────────────────────────────────────────
 
@@ -26,15 +26,15 @@ build:
 
 $(BINARY): build
 
-preprocess: $(REFS_BIN)
+ivf: $(IVF_BIN)
 
-$(REFS_BIN):
-	@echo "refs.bin not found — running preprocessor..."
-	cargo run --bin preprocess --release
+$(IVF_BIN):
+	@echo "ivf_index.bin not found — running build_ivf.py (3-8 min)..."
+	uv run python tools/build_ivf.py
 
 # ── Docker Compose (nginx:9999 → api1:3000 + api2:3000) ───────────────────
 
-up: $(REFS_BIN)
+up:
 	docker compose up --build -d
 	@echo "Waiting for $(READY_URL)..."
 	@until curl -sf $(READY_URL) > /dev/null 2>&1; do \
@@ -47,9 +47,9 @@ down:
 
 # ── Local dev (single instance on port 9999, no Docker) ───────────────────
 
-dev: $(BINARY) $(REFS_BIN)
+dev: $(BINARY) $(IVF_BIN)
 	PORT=$(PORT) \
-	REFS_PATH=$(REFS_BIN) \
+	IVF_PATH=$(IVF_BIN) \
 	MCC_PATH=resources/mcc_risk.json \
 	NORM_PATH=resources/normalization.json \
 	$(BINARY)
@@ -69,3 +69,4 @@ doc:
 
 clean:
 	cargo clean
+	rm -f $(IVF_BIN)
