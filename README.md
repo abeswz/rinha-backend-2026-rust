@@ -106,7 +106,7 @@ test/
 
 ### Pré-requisitos
 
-- Rust 1.80+
+- Rust 1.82+
 - Docker + Docker Compose (para rodar via contêiner)
 - k6 (para testes de carga)
 
