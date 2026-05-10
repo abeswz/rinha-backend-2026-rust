@@ -55,7 +55,7 @@ def _vector_limitation_value(value: float) -> float:
 
 # 0 	amount 	limitar(transaction.amount / max_amount) ✅️
 # 1 	installments 	limitar(transaction.installments / max_installments) ✅️
-# 2 	amount_vs_avg 	limitar((transaction.amount / customer.avg_amount) / amount_vs_avg_ratio)
+# 2 	amount_vs_avg 	limitar((transaction.amount / customer.avg_amount) / amount_vs_avg_ratio) ✅️
 # 3 	hour_of_day 	hora(transaction.requested_at) / 23 (0-23, UTC)
 # 4 	day_of_week 	dia_da_semana(transaction.requested_at) / 6 (seg=0, dom=6)
 # 5 	minutes_since_last_tx 	limitar(minutos / max_minutes) ou -1 se last_transaction: null
