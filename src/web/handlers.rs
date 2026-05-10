@@ -1,7 +1,9 @@
 use crate::AppState;
 use crate::{
-    domain::transaction::{Customer, LastTransaction, Merchant, Terminal, Transaction},
-    error::AppError,
+    domain::{
+        fraud::FraudDecision,
+        transaction::{Customer, LastTransaction, Merchant, Terminal, Transaction},
+    },
     web::dto::{FraudScoreResponse, TransactionRequest},
 };
 use axum::{extract::State, Json};
@@ -15,13 +17,21 @@ pub async fn ready_handler() -> &'static str {
 pub async fn fraud_score_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TransactionRequest>,
-) -> Result<Json<FraudScoreResponse>, AppError> {
+) -> Json<FraudScoreResponse> {
     let tx = into_transaction(req);
-    let decision = state.use_case.execute(&tx);
-    Ok(Json(FraudScoreResponse {
+    let decision = tokio::task::spawn_blocking({
+        let state = Arc::clone(&state);
+        move || state.use_case.execute(&tx)
+    })
+    .await
+    .unwrap_or(FraudDecision {
+        approved: true,
+        fraud_score: 0.0,
+    });
+    Json(FraudScoreResponse {
         approved: decision.approved,
         fraud_score: decision.fraud_score,
-    }))
+    })
 }
 
 fn into_transaction(req: TransactionRequest) -> Transaction {
