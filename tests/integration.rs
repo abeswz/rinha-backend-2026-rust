@@ -7,9 +7,10 @@ use std::{path::PathBuf, sync::Arc};
 static STATE: Lazy<Arc<AppState>> = Lazy::new(|| {
     let config = Config {
         port: 3000,
-        refs_path: PathBuf::from("resources/refs.bin"),
+        ivf_path: PathBuf::from("resources/ivf_index.bin"),
         mcc_path: PathBuf::from("resources/mcc_risk.json"),
         norm_path: PathBuf::from("resources/normalization.json"),
+        nprobe: 8,
     };
     Arc::new(
         AppState::build(&config)
