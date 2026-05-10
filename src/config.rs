@@ -19,8 +19,7 @@ impl Config {
                 std::env::var("REFS_PATH").unwrap_or_else(|_| "resources/refs.bin".to_string()),
             ),
             mcc_path: PathBuf::from(
-                std::env::var("MCC_PATH")
-                    .unwrap_or_else(|_| "resources/mcc_risk.json".to_string()),
+                std::env::var("MCC_PATH").unwrap_or_else(|_| "resources/mcc_risk.json".to_string()),
             ),
             norm_path: PathBuf::from(
                 std::env::var("NORM_PATH")
