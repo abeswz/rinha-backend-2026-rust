@@ -2,5 +2,6 @@
 mod domain;
 mod repository;
 mod service;
+mod usecase;
 
 fn main() {}
