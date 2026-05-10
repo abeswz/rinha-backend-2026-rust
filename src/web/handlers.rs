@@ -24,9 +24,12 @@ pub async fn fraud_score_handler(
         move || state.use_case.execute(&tx)
     })
     .await
-    .unwrap_or(FraudDecision {
-        approved: true,
-        fraud_score: 0.0,
+    .unwrap_or_else(|e| {
+        tracing::error!(err = ?e, "spawn_blocking join failed; falling back to approved");
+        FraudDecision {
+            approved: true,
+            fraud_score: 0.0,
+        }
     });
     Json(FraudScoreResponse {
         approved: decision.approved,
