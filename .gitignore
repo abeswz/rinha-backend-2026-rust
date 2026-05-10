@@ -8,3 +8,11 @@ wheels/
 
 # Virtual environments
 .venv
+
+# AI request specs
+docs/reqs/*
+!docs/reqs/.gitkeep
+
+# Superpowers specs/plans
+.superpowers/*
+!.superpowers/.gitkeep
