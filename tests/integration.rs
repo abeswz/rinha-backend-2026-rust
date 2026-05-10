@@ -14,7 +14,7 @@ static STATE: Lazy<Arc<AppState>> = Lazy::new(|| {
     };
     Arc::new(
         AppState::build(&config)
-            .expect("AppState init failed — run `cargo run --bin preprocess` first"),
+            .expect("AppState init failed — run `python tools/build_ivf.py` first"),
     )
 });
 
