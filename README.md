@@ -8,7 +8,7 @@ API de detecção de fraude em tempo real construída em Rust. Recebe uma transa
 
 ### Visão geral
 
-O sistema usa **KNN brute-force** (K-Nearest Neighbors) para classificar transações. Em vez de um modelo de ML complexo, a abordagem é direta:
+O sistema usa **IVF KNN** (Inverted File Index + K-Nearest Neighbors) para classificar transações. Em vez de um modelo de ML complexo, a abordagem é direta:
 
 1. A transação chega como JSON
 2. É convertida num vetor de 14 dimensões
@@ -60,9 +60,14 @@ fraud_score = fraudes_entre_5_vizinhas / 5
 approved    = fraud_score < 0.6
 ```
 
-### Armazenamento dos vetores de referência
+### Índice IVF (Inverted File Index)
 
-Os 3 milhões de vetores são armazenados em `resources/refs.bin` como `f16` (float de 16 bits). Isso reduz o tamanho de ~168MB (f32) para ~83MB, cabendo na restrição de 170MB por instância. O arquivo é carregado inteiro na memória no startup — nenhuma I/O em tempo de requisição.
+Os 3 milhões de vetores são agrupados em **K=1732 clusters** via MiniBatchKMeans (gerado offline pelo script Python). O índice é armazenado em `resources/ivf_index.bin` como `f16` (~90MB em RAM). A busca por requisição:
+
+- Brute-force em todo o dataset: ~42M comparações
+- IVF com `nprobe=8` clusters mais próximos: ~217K comparações (~200× mais rápido)
+
+O índice é carregado inteiro na memória no startup — nenhuma I/O em tempo de requisição. A busca roda em thread dedicada via `spawn_blocking`, sem bloquear o runtime Tokio.
 
 ---
 
@@ -80,18 +85,22 @@ src/
   service/
     vectorizer.rs     # Vetorização: Transaction → FraudVector
   repository/
-    reference.rs      # Leitura do refs.bin + KNN brute-force
+    ivf.rs            # IvfIndex: load() + knn() com nprobe clusters
+    reference.rs      # ReferenceRepository: wrapper sobre IvfIndex
   usecase/
     score_fraud.rs    # Orquestração: vetoriza → KNN → decisão
   web/
     dto.rs            # DTOs de request/response (serde)
-    handlers.rs       # Handlers Axum
+    handlers.rs       # Handlers Axum (spawn_blocking + fallback)
     router.rs         # Rotas: GET /ready, POST /fraud-score
 bin/
-  preprocess.rs       # Converte references.json.gz → refs.bin
+  preprocess.rs       # (legado) Converte references.json.gz → refs.bin
+tools/
+  build_ivf.py        # Gera ivf_index.bin via MiniBatchKMeans (K=1732)
+  requirements.txt    # numpy, scikit-learn
 resources/
   references.json.gz  # Dataset de referência (3M transações rotuladas)
-  refs.bin            # Vetores pré-processados em f16 (~83MB)
+  ivf_index.bin       # Índice IVF em f16 (~90MB) — gerado, não versionado
   mcc_risk.json       # Mapa de risco por MCC
   normalization.json  # Constantes de normalização
 test/
@@ -108,6 +117,7 @@ test/
 
 - Rust 1.82+
 - Docker + Docker Compose (para rodar via contêiner)
+- Python 3.12+ com `uv` (para gerar o índice IVF localmente)
 - k6 (para testes de carga)
 
 ### Makefile
@@ -122,7 +132,7 @@ Todos os fluxos comuns estão cobertos pelo `Makefile`:
 | `make smoke` | Executa o smoke test k6 (5 requests, valida JSON/campos) |
 | `make load` | Executa o load test k6 completo (54k transações, 120s de rampa) |
 | `make build` | `cargo build --release` |
-| `make preprocess` | Gera `resources/refs.bin` a partir de `references.json.gz` |
+| `make ivf` | Gera `resources/ivf_index.bin` via Python (3-8 min, necessário para `make dev`) |
 | `make doc` | Abre a documentação Rust gerada pelo `cargo doc` no browser |
 | `make clean` | Remove artefatos de build |
 
@@ -138,18 +148,20 @@ make down    # para tudo
 #### Fluxo local sem Docker
 
 ```bash
+make ivf     # gera ivf_index.bin (só precisa rodar uma vez, ~3-8 min)
 make dev     # em um terminal (instância única na porta 9999)
 make smoke   # em outro terminal
 ```
 
-`make up` e `make dev` rodam `make preprocess` automaticamente se `resources/refs.bin` não existir.
+`make ivf` só roda se `resources/ivf_index.bin` não existir. `make up` não precisa de `make ivf` — o Docker gera o índice automaticamente na etapa de build Python.
 
 ### Variáveis de ambiente
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `PORT` | `3000` | Porta HTTP |
-| `REFS_PATH` | `resources/refs.bin` | Vetores de referência |
+| `IVF_PATH` | `resources/ivf_index.bin` | Índice IVF gerado pelo `build_ivf.py` |
+| `IVF_NPROBE` | `8` | Clusters a sondar por requisição (acurácia vs. velocidade) |
 | `MCC_PATH` | `resources/mcc_risk.json` | Mapa de risco MCC |
 | `NORM_PATH` | `resources/normalization.json` | Constantes de normalização |
 
@@ -235,7 +247,7 @@ cargo test --test integration
 cargo test --test regression
 ```
 
-Os testes de integração e regressão carregam o `refs.bin` real (3M vetores). O primeiro run demora ~4s para carregar; os testes em si são rápidos.
+Os testes de integração e regressão carregam o `ivf_index.bin` real. Requer `make ivf` antes do primeiro run. O carregamento demora ~1s; os testes em si são rápidos.
 
 ### Smoke test (k6)
 
@@ -302,4 +314,4 @@ Dataset de teste: **54.100 transações** (44% fraude, 56% legítima, 1.5% casos
 | nginx (proxy) | 0.05 vCPU / 10 MB |
 | **Total** | **1 CPU / 350 MB** |
 
-O `refs.bin` ocupa ~83MB em RAM. O restante (~87MB) cobre o binário, stack Tokio, buffers de conexão e overhead do OS.
+O `ivf_index.bin` ocupa ~90MB em RAM. O restante (~80MB) cobre o binário, stack Tokio, buffers de conexão e overhead do OS.
