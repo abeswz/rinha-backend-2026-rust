@@ -126,6 +126,7 @@ mod tests {
         Vectorizer { norm, mcc_risk }
     }
 
+    #[allow(clippy::excessive_precision)]
     fn legit_tx() -> Transaction {
         Transaction {
             id: "tx-1329056812".to_string(),
