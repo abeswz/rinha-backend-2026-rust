@@ -73,14 +73,14 @@ with open(OUTPUT, "wb") as f:
     f.write(struct.pack("<II", K, D))
     # Centroids: K * 14 * 4B f32, row-major
     for centroid in centroids:
-        f.write(centroid.astype(np.float32).tobytes())
+        f.write(centroid.astype(np.dtype('<f4')).tobytes())
     # List sizes: K * 4B u32
     for lst in lists:
         f.write(struct.pack("<I", len(lst)))
     # Entries: for each cluster, each entry is 14 * 2B f16 + 1B u8
     for lst in lists:
         for vec, label in lst:
-            f.write(vec.astype(np.float16).tobytes())
+            f.write(vec.astype(np.dtype('<f2')).tobytes())
             f.write(struct.pack("B", label))
 
 size_mb = OUTPUT.stat().st_size / 1024**2
