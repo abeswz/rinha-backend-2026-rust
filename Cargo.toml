@@ -1,0 +1,30 @@
+[package]
+name = "fraud-detection"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "fraud-detection"
+path = "src/main.rs"
+
+[[bin]]
+name = "preprocess"
+path = "bin/preprocess.rs"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+half = "2"
+smallvec = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+dotenvy = "0.15"
+tower-http = { version = "0.5", features = ["trace"] }
+flate2 = "1"
+
+[dev-dependencies]
+axum-test = "15"
+once_cell = "1"
