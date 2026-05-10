@@ -1,18 +1,110 @@
-# Python-generated files
-__pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
+# =========================================================
+# Rust
+# =========================================================
 
-# Virtual environments
-.venv
+# Compiled artifacts
+target/
 
-# AI request specs
+# Remove Cargo.lock for libraries only.
+# Keep Cargo.lock for applications/services.
+# Cargo.lock
+
+# Backup files
+*.rs.bk
+
+# Rust analyzer / IDE
+.rust-analyzer.json
+
+# =========================================================
+# Environment
+# =========================================================
+
+.env
+.env.*
+!.env.example
+
+# =========================================================
+# Logs
+# =========================================================
+
+*.log
+logs/
+
+# =========================================================
+# Coverage / Benchmark / Profiling
+# =========================================================
+
+coverage/
+tarpaulin-report.html
+
+criterion/
+bench-results/
+
+flamegraph.svg
+
+# =========================================================
+# Editors / IDEs
+# =========================================================
+
+.idea/
+.vscode/
+
+*.swp
+*.swo
+*~
+
+# =========================================================
+# OS files
+# =========================================================
+
+.DS_Store
+Thumbs.db
+
+# =========================================================
+# Temporary / Cache
+# =========================================================
+
+tmp/
+temp/
+.cache/
+
+# =========================================================
+# AI Request Specs
+# =========================================================
+
 docs/reqs/*
 !docs/reqs/.gitkeep
+!docs/reqs/templates/
 
-# Superpowers specs/plans
-.superpowers/*
+docs/reqs/templates/*
+!docs/reqs/templates/.gitkeep
+
+# =========================================================
+# Superpowers
+# =========================================================
+
+.superpowers/specs/**
+.superpowers/plans/**
+.superpowers/scratch/**
+.superpowers/cache/**
+
 !.superpowers/.gitkeep
+!.superpowers/README.md
+!.superpowers/templates/**
+
+# =========================================================
+# Optional Generated Data
+# =========================================================
+
+data/generated/
+artifacts/
+exports/
+
+# =========================================================
+# Security
+# =========================================================
+
+*.pem
+*.key
+*.crt
+secrets/
