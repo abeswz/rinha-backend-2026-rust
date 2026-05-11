@@ -3,7 +3,8 @@ PROFILING_BIN  := target/profiling/fraud-detection
 IVF_BIN        := resources/ivf_index.bin
 PORT           := 9999
 READY_URL      := http://localhost:$(PORT)/ready
-IMAGE          := ghcr.io/abeswz/fraud-detection-rinha-backend-2026:latest
+GIT_SHA        := $(shell git rev-parse --short HEAD)
+IMAGE          := ghcr.io/abeswz/fraud-detection-rinha-backend-2026:$(GIT_SHA)
 
 .PHONY: all build ivf up down dev smoke load test clean doc help profile publish submission
 
