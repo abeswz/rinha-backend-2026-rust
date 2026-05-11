@@ -1,0 +1,7 @@
+{
+    "participants": ["abesnow"],
+    "social": ["https://github.com/abeswz", "https://www.linkedin.com/in/anves"],
+    "source-code-repo": "https://github.com/abeswz/fraud-detection-rinha-backend-2026",
+    "stack": ["rust", "nginx"],
+    "open_to_work": false
+}
