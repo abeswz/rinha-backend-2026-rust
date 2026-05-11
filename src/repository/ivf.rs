@@ -1,6 +1,11 @@
 use half::f16;
 use smallvec::SmallVec;
+use std::cell::RefCell;
 use std::path::Path;
+
+thread_local! {
+    static CENTROID_BUF: RefCell<Vec<(f32, usize)>> = RefCell::new(Vec::with_capacity(2048));
+}
 
 pub struct IvfIndex {
     k: usize,
@@ -94,37 +99,47 @@ impl IvfIndex {
     }
 
     pub fn knn(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
-        let mut centroid_dists: Vec<(f32, usize)> = self
-            .centroids
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (centroid_sq_dist(query, c), i))
-            .collect();
-        centroid_dists
-            .sort_unstable_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
         let nprobe = self.nprobe.min(self.k);
 
-        let mut top: Vec<(u32, u8)> = Vec::with_capacity(k + 1);
-        for &(_, ci) in &centroid_dists[..nprobe] {
-            for (vec, label) in &self.lists[ci] {
-                let dist = vec_sq_dist(query, vec);
-                if dist.is_nan() {
-                    continue;
-                }
-                let dist_bits = dist.to_bits();
-                if top.len() < k {
-                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
-                    top.insert(pos, (dist_bits, *label));
-                } else if dist_bits < top[top.len() - 1].0 {
-                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
-                    top.insert(pos, (dist_bits, *label));
-                    top.truncate(k);
+        CENTROID_BUF.with(|buf| {
+            let mut buf = buf.borrow_mut();
+            buf.clear();
+            buf.extend(
+                self.centroids
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| (centroid_sq_dist(query, c), i)),
+            );
+
+            // O(K) partial select instead of O(K log K) full sort
+            if nprobe < buf.len() {
+                buf.select_nth_unstable_by(nprobe - 1, |a, b| {
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+
+            // k+1 capacity fits on stack — no heap alloc for k=5
+            let mut top: SmallVec<[(u32, u8); 6]> = SmallVec::new();
+            for &(_, ci) in &buf[..nprobe] {
+                for (vec, label) in &self.lists[ci] {
+                    let dist = vec_sq_dist(query, vec);
+                    if dist.is_nan() {
+                        continue;
+                    }
+                    let dist_bits = dist.to_bits();
+                    if top.len() < k {
+                        let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                        top.insert(pos, (dist_bits, *label));
+                    } else if dist_bits < top[top.len() - 1].0 {
+                        let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                        top.insert(pos, (dist_bits, *label));
+                        top.truncate(k);
+                    }
                 }
             }
-        }
 
-        top.iter().map(|&(_, label)| label).collect()
+            top.iter().map(|&(_, label)| label).collect()
+        })
     }
 }
 
