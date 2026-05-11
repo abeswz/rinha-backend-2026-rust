@@ -3,8 +3,9 @@ PROFILING_BIN  := target/profiling/fraud-detection
 IVF_BIN        := resources/ivf_index.bin
 PORT           := 9999
 READY_URL      := http://localhost:$(PORT)/ready
+IMAGE          := ghcr.io/abeswz/fraud-detection-rinha-backend-2026:latest
 
-.PHONY: all build ivf up down dev smoke load test clean doc help profile
+.PHONY: all build ivf up down dev smoke load test clean doc help profile publish submission
 
 all: help
 
@@ -20,6 +21,8 @@ help:
 	@echo "  make profile Build profiling binary + run under samply (open Firefox Profiler)"
 	@echo "  make doc     Open rustdoc in browser (cargo doc --open)"
 	@echo "  make clean   Remove build artifacts"
+	@echo "  make publish    Build + push Docker image to GHCR"
+	@echo "  make submission Create submission branch with 3 files, force-push to origin"
 
 # ── Build ──────────────────────────────────────────────────────────────────
 
@@ -86,3 +89,9 @@ doc:
 clean:
 	cargo clean
 	rm -f $(IVF_BIN)
+
+# ── Submission ──────────────────────────────────────────────────────────────
+
+publish:
+	docker build -t $(IMAGE) .
+	docker push $(IMAGE)
