@@ -15,6 +15,7 @@ COPY src/ src/
 COPY bin/ bin/
 COPY resources/ resources/
 COPY --from=ivf-builder /build/resources/ivf_index.bin resources/ivf_index.bin
+ENV RUSTFLAGS="-C target-cpu=haswell"
 RUN cargo build --release
 
 # Stage 3: Runtime image
