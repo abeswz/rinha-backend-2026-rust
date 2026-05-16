@@ -25,16 +25,24 @@ mod tests {
         let mut buf: Vec<u8> = Vec::new();
         buf.extend_from_slice(&2u32.to_le_bytes());
         buf.extend_from_slice(&14u32.to_le_bytes());
-        for _ in 0..14 { buf.extend_from_slice(&0.0f32.to_le_bytes()); }
-        for _ in 0..14 { buf.extend_from_slice(&10.0f32.to_le_bytes()); }
+        for _ in 0..14 {
+            buf.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        for _ in 0..14 {
+            buf.extend_from_slice(&10.0f32.to_le_bytes());
+        }
         buf.extend_from_slice(&3u32.to_le_bytes());
         buf.extend_from_slice(&3u32.to_le_bytes());
         for _ in 0..3 {
-            for _ in 0..14 { buf.extend_from_slice(&half::f16::from_f32(0.1).to_le_bytes()); }
+            for _ in 0..14 {
+                buf.extend_from_slice(&half::f16::from_f32(0.1).to_le_bytes());
+            }
             buf.push(0u8);
         }
         for _ in 0..3 {
-            for _ in 0..14 { buf.extend_from_slice(&half::f16::from_f32(10.0).to_le_bytes()); }
+            for _ in 0..14 {
+                buf.extend_from_slice(&half::f16::from_f32(10.0).to_le_bytes());
+            }
             buf.push(1u8);
         }
         let path = std::env::temp_dir().join(name);

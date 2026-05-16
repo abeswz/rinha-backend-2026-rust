@@ -61,7 +61,11 @@ mod tests {
         // Only run if resources exist (CI/CD may not have them)
         if config.ivf_path.exists() {
             let state = AppState::build(&config);
-            assert!(state.is_ok(), "AppState::build should succeed: {:?}", state.err());
+            assert!(
+                state.is_ok(),
+                "AppState::build should succeed: {:?}",
+                state.err()
+            );
         }
     }
 }

@@ -474,12 +474,18 @@ mod tests {
         let labels = idx.knn_adaptive(&query, 5);
         assert_eq!(labels.len(), 5);
         let fraud_count = labels.iter().filter(|&&l| l == 1).count();
-        assert!(fraud_count >= 4, "Stage 2 should find straggler fraud entries, got {fraud_count} fraud");
+        assert!(
+            fraud_count >= 4,
+            "Stage 2 should find straggler fraud entries, got {fraud_count} fraud"
+        );
 
         // Verify Stage 1 alone would have returned only 2 fraud
         let stage1_labels = idx.knn(&query, 5, 5);
         let stage1_fraud = stage1_labels.iter().filter(|&&l| l == 1).count();
-        assert_eq!(stage1_fraud, 2, "Stage 1 should be ambiguous (2 fraud), got {stage1_fraud}");
+        assert_eq!(
+            stage1_fraud, 2,
+            "Stage 1 should be ambiguous (2 fraud), got {stage1_fraud}"
+        );
 
         std::fs::remove_file(&path).ok();
     }
