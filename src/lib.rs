@@ -27,11 +27,41 @@ impl AppState {
         let norm = NormalizationConstants::from_file(&config.norm_path)?;
         let mcc_risk = MccRiskMap::from_file(&config.mcc_path)?;
         let vectorizer = Vectorizer::new(norm, mcc_risk);
-        Ok(Self {
+        let state = Self {
             use_case: ScoreFraudUseCase {
                 vectorizer,
                 repository,
             },
-        })
+        };
+        // Prime CPU branch predictors and L2/L3 caches before serving traffic
+        let warmup_query = [0.0f32; 14];
+        for _ in 0..500 {
+            let _ = state.use_case.repository.knn_adaptive(&warmup_query, 5);
+        }
+        Ok(state)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_appstate_build_warmup_does_not_panic() {
+        // Warmup should complete without panic when index is loaded
+        let config = Config {
+            port: 3000,
+            ivf_path: PathBuf::from("resources/ivf_index.bin"),
+            mcc_path: PathBuf::from("resources/mcc_risk.json"),
+            norm_path: PathBuf::from("resources/normalization.json"),
+            nprobe_slow: 24,
+        };
+        // Only run if resources exist (CI/CD may not have them)
+        if config.ivf_path.exists() {
+            let state = AppState::build(&config);
+            assert!(state.is_ok(), "AppState::build should succeed: {:?}", state.err());
+        }
     }
 }
