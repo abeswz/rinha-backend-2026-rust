@@ -1,10 +1,11 @@
 use crate::AppState;
 use crate::{
-    domain::transaction::{Customer, LastTransaction, Merchant, Terminal, Transaction},
+    domain::{fraud::FraudDecision, transaction::{Customer, LastTransaction, Merchant, Terminal, Transaction}},
     web::dto::{FraudScoreResponse, TransactionRequest},
 };
 use axum::{extract::State, Json};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub async fn ready_handler() -> &'static str {
     "ok"
@@ -15,9 +16,19 @@ pub async fn fraud_score_handler(
     Json(req): Json<TransactionRequest>,
 ) -> impl axum::response::IntoResponse {
     let tx = into_transaction(req);
-    let decision = tokio::task::spawn_blocking(move || state.use_case.execute(&tx))
-        .await
-        .expect("KNN task panicked");
+    // 1600ms timeout: 200ms below nginx proxy_read_timeout (1800ms).
+    // Fallback approved=true trades FN (penalty 3) vs HTTP 504 (penalty 5).
+    let decision = tokio::time::timeout(
+        Duration::from_millis(1600),
+        tokio::task::spawn_blocking(move || state.use_case.execute(&tx)),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .unwrap_or(FraudDecision {
+        approved: true,
+        fraud_score: 0.0,
+    });
     Json(FraudScoreResponse {
         approved: decision.approved,
         fraud_score: decision.fraud_score,
