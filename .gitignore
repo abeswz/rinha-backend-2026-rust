@@ -131,3 +131,5 @@ tools/__pycache__/
 *.pyo
 .venv/
 tools/.venv/
+
+memory/
