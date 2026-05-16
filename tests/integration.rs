@@ -19,7 +19,7 @@ static STATE: Lazy<Arc<AppState>> = Lazy::new(|| {
 });
 
 fn test_server() -> TestServer {
-    TestServer::new(build_router(STATE.clone())).unwrap()
+    TestServer::new(build_router(STATE.clone()))
 }
 
 #[tokio::test]
