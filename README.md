@@ -4,21 +4,63 @@ API de detecção de fraude em tempo real construída em Rust. Recebe uma transa
 
 ---
 
+## Arquitetura
+
+```
+                  ┌─────────────────────────────────────────────┐
+                  │              Docker Compose                  │
+                  │                                             │
+  Client ─────►  │  nginx:9999 ──least_conn──► api1:3000       │
+                  │               │             api2:3000       │
+                  │               └─────────────────┘           │
+                  │                      │                       │
+                  │              spawn_blocking                  │
+                  │                      │                       │
+                  │              ┌───────▼──────────┐            │
+                  │              │  knn_adaptive    │            │
+                  │              │  Stage 1 (fast)  │            │
+                  │              │  nprobe = 5      │            │
+                  │              └───────┬──────────┘            │
+                  │                      │                       │
+                  │              ambiguous vote?                  │
+                  │               /          \                   │
+                  │             no            yes                │
+                  │              │             │                  │
+                  │           return    ┌──────▼──────────┐      │
+                  │                    │  Stage 2 (slow)  │      │
+                  │                    │  nprobe = 24     │      │
+                  │                    └──────┬───────────┘      │
+                  │                           │                   │
+                  │                        return                 │
+                  └─────────────────────────────────────────────┘
+```
+
+---
+
 ## Como funciona
 
 ### Visão geral
 
-O sistema usa **IVF KNN** (Inverted File Index + K-Nearest Neighbors) para classificar transações. Em vez de um modelo de ML complexo, a abordagem é direta:
+O sistema usa **IVF KNN** (Inverted File Index + K-Nearest Neighbors) para classificar transações:
 
 1. A transação chega como JSON
 2. É convertida num vetor de 14 dimensões
-3. As 5 transações mais próximas são buscadas em 3M de referências
+3. As 5 transações mais próximas são buscadas via busca adaptativa em dois estágios
 4. A proporção de fraudes entre as 5 vizinhas vira o `fraud_score`
 5. Se `fraud_score >= 0.6`, a transação é negada
 
-### O vetor de 14 dimensões
+### Busca adaptativa (dois estágios)
 
-Cada transação é normalizada para o intervalo `[0.0, 1.0]` (ou `-1.0` como sentinela quando o dado não existe):
+Em vez de sempre sondar `N` clusters, a busca usa dois estágios:
+
+| Estágio | nprobe | Quando retorna |
+|---------|--------|----------------|
+| Rápido  | 5      | votos ≤ 1 (claramente legítimo) ou votos ≥ 4 (claramente fraude) |
+| Lento   | 24     | casos ambíguos (2–3 votos de fraude em 5) |
+
+A maioria das requisições retorna no estágio rápido (nprobe=5 ≈ 0,3% dos clusters). Apenas os casos ambíguos sobem para o estágio lento (nprobe=24 ≈ 1,4% dos clusters), melhorando acurácia sem penalizar latência no caso médio.
+
+### O vetor de 14 dimensões
 
 | Dim | Descrição | Fórmula |
 |-----|-----------|---------|
@@ -26,7 +68,7 @@ Cada transação é normalizada para o intervalo `[0.0, 1.0]` (ou `-1.0` como se
 | 1 | Número de parcelas | `installments / 12` |
 | 2 | Razão valor vs. média do cliente | `(amount / avg_amount) / 10` |
 | 3 | Hora do dia | `hour / 23` |
-| 4 | Dia da semana | `weekday / 6` (Seg=0, Dom=6) |
+| 4 | Dia da semana | `weekday / 6` |
 | 5 | Minutos desde última transação | `minutes / 1440` ou `-1.0` se ausente |
 | 6 | Distância da última transação (km) | `km / 1000` ou `-1.0` se ausente |
 | 7 | Distância de casa (km) | `km_from_home / 1000` |
@@ -34,10 +76,10 @@ Cada transação é normalizada para o intervalo `[0.0, 1.0]` (ou `-1.0` como se
 | 9 | Terminal online | `1.0` se online, `0.0` se não |
 | 10 | Cartão presente | `1.0` se presente, `0.0` se não |
 | 11 | Comerciante desconhecido | `1.0` se novo, `0.0` se conhecido |
-| 12 | Risco do MCC | Mapa fixo por categoria de comerciante |
+| 12 | Risco do MCC | Mapa fixo por categoria |
 | 13 | Ticket médio do comerciante | `merchant_avg_amount / 10000` |
 
-### Risco por MCC (categoria do comerciante)
+### Risco por MCC
 
 | MCC | Categoria | Risco |
 |-----|-----------|-------|
@@ -50,24 +92,20 @@ Cada transação é normalizada para o intervalo `[0.0, 1.0]` (ou `-1.0` como se
 | 7995 | Cassinos / jogos | 0.85 |
 | 4511 | Companhias aéreas | 0.35 |
 | 5311 | Lojas de departamento | 0.25 |
-| 5999 | Outros | 0.50 |
-| Desconhecido | — | 0.50 |
+| 5999 / Outros | — | 0.50 |
 
-### Decisão final
+### Índice IVF
 
-```
-fraud_score = fraudes_entre_5_vizinhas / 5
-approved    = fraud_score < 0.6
-```
+Os 3 milhões de vetores são agrupados em **K=1732 clusters** via MiniBatchKMeans. Armazenado em `resources/ivf_index.bin` como `f16` (~90MB em RAM). O índice é carregado inteiro no startup — nenhuma I/O por requisição.
 
-### Índice IVF (Inverted File Index)
+A busca usa SIMD (AVX2 + F16C) para conversão f16→f32 e cálculo de distância, e `select_nth_unstable` (O(K) vs O(K log K)) para selecionar os clusters mais próximos.
 
-Os 3 milhões de vetores são agrupados em **K=1732 clusters** via MiniBatchKMeans (gerado offline pelo script Python). O índice é armazenado em `resources/ivf_index.bin` como `f16` (~90MB em RAM). A busca por requisição:
+### Runtime
 
-- Brute-force em todo o dataset: ~42M comparações
-- IVF com `nprobe=8` clusters mais próximos: ~217K comparações (~200× mais rápido)
-
-O índice é carregado inteiro na memória no startup — nenhuma I/O em tempo de requisição. A busca roda em thread dedicada via `spawn_blocking`, sem bloquear o runtime Tokio.
+- **2 worker threads** Tokio: accept/parse/serialize
+- **8 blocking threads**: buscas IVF paralelas via `spawn_blocking`
+- **mimalloc**: alocador global de alta performance
+- **500 queries de warmup** no startup para primar caches de CPU
 
 ---
 
@@ -75,93 +113,63 @@ O índice é carregado inteiro na memória no startup — nenhuma I/O em tempo d
 
 ```
 src/
-  lib.rs              # AppState e módulos públicos (usado pelos testes)
-  main.rs             # Binário principal (HTTP server)
+  lib.rs              # AppState, módulos públicos
+  main.rs             # Binário (runtime Tokio + mimalloc)
   config.rs           # Config via variáveis de ambiente
-  error.rs            # AppError com IntoResponse
   domain/
-    transaction.rs    # Structs de domínio (Transaction, Customer, Merchant...)
-    fraud.rs          # FraudVector([f32;14]), FraudDecision
+    transaction.rs    # Transaction, Customer, Merchant...
+    fraud.rs          # FraudDecision
   service/
-    vectorizer.rs     # Vetorização: Transaction → FraudVector
+    vectorizer.rs     # Transaction → [f32; 14]
   repository/
-    ivf.rs            # IvfIndex: load() + knn() com nprobe clusters
-    reference.rs      # ReferenceRepository: wrapper sobre IvfIndex
+    ivf.rs            # IvfIndex: knn() + knn_adaptive()
+    reference.rs      # ReferenceRepository
   usecase/
-    score_fraud.rs    # Orquestração: vetoriza → KNN → decisão
+    score_fraud.rs    # Vetoriza → knn_adaptive → decisão
   web/
-    dto.rs            # DTOs de request/response (serde)
-    handlers.rs       # Handlers Axum (spawn_blocking + fallback)
-    router.rs         # Rotas: GET /ready, POST /fraud-score
-bin/
-  preprocess.rs       # (legado) Converte references.json.gz → refs.bin
+    dto.rs            # DTOs request/response
+    handlers.rs       # Axum handlers (spawn_blocking)
+    router.rs         # GET /ready, POST /fraud-score
 tools/
-  build_ivf.py        # Gera ivf_index.bin via MiniBatchKMeans (K=1732)
-  requirements.txt    # numpy, scikit-learn
+  build_ivf.py        # Gera ivf_index.bin (MiniBatchKMeans K=1732)
 resources/
-  references.json.gz  # Dataset de referência (3M transações rotuladas)
-  ivf_index.bin       # Índice IVF em f16 (~90MB) — gerado, não versionado
-  mcc_risk.json       # Mapa de risco por MCC
+  ivf_index.bin       # Índice IVF f16 (~90MB) — gerado, não versionado
+  mcc_risk.json       # Risco por MCC
   normalization.json  # Constantes de normalização
-test/
-  smoke.js            # Smoke test k6 (1 VU, 5 iterações)
-  test.js             # Load test k6 com scoring de detecção
-  test-data.json      # 54.100 transações com gabarito (44% fraude)
 ```
 
 ---
 
 ## Como usar
 
-### Pré-requisitos
-
-- Rust 1.82+
-- Docker + Docker Compose (para rodar via contêiner)
-- Python 3.12+ com `uv` (para gerar o índice IVF localmente)
-- k6 (para testes de carga)
-
 ### Makefile
-
-Todos os fluxos comuns estão cobertos pelo `Makefile`:
 
 | Comando | O que faz |
 |---------|-----------|
-| `make up` | Build da imagem Docker + `docker compose up -d` + aguarda `/ready` |
+| `make up` | Build da imagem + `docker compose up -d` + aguarda `/ready` |
 | `make down` | Para o docker compose |
-| `make dev` | Compila e roda uma instância local direto na porta 9999 (sem Docker) |
-| `make smoke` | Executa o smoke test k6 (5 requests, valida JSON/campos) |
-| `make load` | Executa o load test k6 completo (54k transações, 120s de rampa) |
-| `make build` | `cargo build --release` |
-| `make ivf` | Gera `resources/ivf_index.bin` via Python (3-8 min, necessário para `make dev`) |
-| `make doc` | Abre a documentação Rust gerada pelo `cargo doc` no browser |
-| `make clean` | Remove artefatos de build |
+| `make dev` | Roda instância local na porta 9999 (sem Docker) |
+| `make smoke` | Smoke test k6 (5 requests) |
+| `make load` | Load test k6 (54k transações, 120s) |
+| `make publish` | Build + push da imagem para GHCR |
+| `make submission` | Cria branch `submission` com 3 arquivos, força push |
 
-#### Fluxo com Docker (stack completa)
+### Fluxo Docker
 
 ```bash
-make up      # build + sobe nginx:9999 → api1:3000 + api2:3000
-make smoke   # valida que está respondendo
-make load    # executa o load test completo
-make down    # para tudo
+make up      # build + nginx:9999 → api1+api2
+make smoke   # valida resposta
+make load    # load test completo
+make down
 ```
-
-#### Fluxo local sem Docker
-
-```bash
-make ivf     # gera ivf_index.bin (só precisa rodar uma vez, ~3-8 min)
-make dev     # em um terminal (instância única na porta 9999)
-make smoke   # em outro terminal
-```
-
-`make ivf` só roda se `resources/ivf_index.bin` não existir. `make up` não precisa de `make ivf` — o Docker gera o índice automaticamente na etapa de build Python.
 
 ### Variáveis de ambiente
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
 | `PORT` | `3000` | Porta HTTP |
-| `IVF_PATH` | `resources/ivf_index.bin` | Índice IVF gerado pelo `build_ivf.py` |
-| `IVF_NPROBE` | `8` | Clusters a sondar por requisição (acurácia vs. velocidade) |
+| `IVF_PATH` | `resources/ivf_index.bin` | Índice IVF |
+| `IVF_NPROBE` | `24` | nprobe do estágio lento (deve ser ≥ 5) |
 | `MCC_PATH` | `resources/mcc_risk.json` | Mapa de risco MCC |
 | `NORM_PATH` | `resources/normalization.json` | Constantes de normalização |
 
@@ -171,137 +179,38 @@ make smoke   # em outro terminal
 
 ### `GET /ready`
 
-Health check.
-
-**Resposta:** `200 OK` com body `ok`
-
----
+Health check. Retorna `200 OK` com body `ok`.
 
 ### `POST /fraud-score`
-
-Avalia uma transação.
 
 **Request:**
 ```json
 {
   "id": "tx-001",
-  "transaction": {
-    "amount": 384.88,
-    "installments": 3,
-    "requested_at": "2026-03-11T20:23:35Z"
-  },
-  "customer": {
-    "avg_amount": 769.76,
-    "tx_count_24h": 3,
-    "known_merchants": ["MERC-009", "MERC-001"]
-  },
-  "merchant": {
-    "id": "MERC-001",
-    "mcc": "5912",
-    "avg_amount": 298.95
-  },
-  "terminal": {
-    "is_online": false,
-    "card_present": true,
-    "km_from_home": 13.71
-  },
-  "last_transaction": {
-    "timestamp": "2026-03-11T14:58:35Z",
-    "km_from_current": 18.86
-  }
+  "transaction": { "amount": 384.88, "installments": 3, "requested_at": "2026-03-11T20:23:35Z" },
+  "customer": { "avg_amount": 769.76, "tx_count_24h": 3, "known_merchants": ["MERC-009"] },
+  "merchant": { "id": "MERC-001", "mcc": "5912", "avg_amount": 298.95 },
+  "terminal": { "is_online": false, "card_present": true, "km_from_home": 13.71 },
+  "last_transaction": { "timestamp": "2026-03-11T14:58:35Z", "km_from_current": 18.86 }
 }
 ```
 
-`last_transaction` pode ser `null` quando não há histórico — as dimensões 5 e 6 do vetor recebem `-1.0` como sentinela.
-
-**Resposta:**
+**Response:**
 ```json
-{
-  "approved": true,
-  "fraud_score": 0.2
-}
+{ "approved": true, "fraud_score": 0.2 }
 ```
 
-| Campo | Tipo | Descrição |
-|-------|------|-----------|
-| `approved` | bool | `true` se `fraud_score < 0.6` |
-| `fraud_score` | float | 0.0 a 1.0 (proporção de vizinhos fraudulentos) |
-
-**Erros:**
-- `422 Unprocessable Entity` — campo obrigatório ausente ou timestamp inválido
+`last_transaction` pode ser `null` — dimensões 5 e 6 recebem `-1.0` como sentinela.
 
 ---
 
 ## Testes
 
-### Testes unitários e de integração (Rust)
-
 ```bash
-# Todos os testes
-cargo test
-
-# Apenas testes de integração
-cargo test --test integration
-
-# Apenas testes de regressão
-cargo test --test regression
+cargo test                    # todos os testes
+cargo test --test integration # integração (requer ivf_index.bin)
+cargo test --test regression  # regressão (requer ivf_index.bin)
 ```
-
-Os testes de integração e regressão carregam o `ivf_index.bin` real. Requer `make ivf` antes do primeiro run. O carregamento demora ~1s; os testes em si são rápidos.
-
-### Smoke test (k6)
-
-Verifica se o servidor está respondendo corretamente com 5 iterações sequenciais.
-
-```bash
-# Com o servidor rodando na porta 9999
-k6 run test/smoke.js
-```
-
-Valida: status 200, body JSON válido, campos `approved` (boolean) e `fraud_score` (number) presentes.
-
-### Load test com scoring (k6)
-
-Teste de carga completo com 54.100 transações reais e gabarito de detecção. Rampa de 0 a 900 req/s em 120 segundos.
-
-```bash
-# Com docker compose rodando
-k6 run test/test.js
-```
-
-Gera `test/results.json` com o breakdown de detecção e a pontuação final.
-
-#### Como o scoring funciona
-
-O teste classifica cada resposta em quatro categorias:
-
-| Categoria | Sigla | Descrição |
-|-----------|-------|-----------|
-| True Positive | TP | Fraude corretamente bloqueada |
-| True Negative | TN | Legítima corretamente aprovada |
-| False Positive | FP | Legítima incorretamente bloqueada |
-| False Negative | FN | Fraude incorretamente aprovada |
-
-**Pesos dos erros:**
-- FP = 1 ponto de penalidade
-- FN = 3 pontos (fraude não detectada é pior)
-- Erro HTTP = 5 pontos
-
-**Fórmula de pontuação:**
-
-```
-E             = (FP × 1) + (FN × 3) + (erros_http × 5)
-epsilon       = E / N
-score_p99     = 1000 × log10(1000 / p99_ms)
-score_detecção = 1000 × log10(1 / epsilon) - 300 × log10(1 + E)
-score_final   = score_p99 + score_detecção
-```
-
-Cortes automáticos aplicados:
-- `p99 > 2000ms` → `score_p99 = -3000`
-- `taxa de falhas > 15%` → `score_detecção = -3000`
-
-Dataset de teste: **54.100 transações** (44% fraude, 56% legítima, 1.5% casos-limite).
 
 ---
 
@@ -311,7 +220,5 @@ Dataset de teste: **54.100 transações** (44% fraude, 56% legítima, 1.5% casos
 |---------|--------|
 | CPU | 0.475 vCPU |
 | RAM | 170 MB |
-| nginx (proxy) | 0.05 vCPU / 10 MB |
+| nginx | 0.05 vCPU / 10 MB |
 | **Total** | **1 CPU / 350 MB** |
-
-O `ivf_index.bin` ocupa ~90MB em RAM. O restante (~80MB) cobre o binário, stack Tokio, buffers de conexão e overhead do OS.
