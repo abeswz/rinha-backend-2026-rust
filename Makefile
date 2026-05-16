@@ -94,8 +94,7 @@ clean:
 # ── Submission ──────────────────────────────────────────────────────────────
 
 publish:
-	docker build -t $(IMAGE) .
-	docker push $(IMAGE)
+	docker buildx build --platform linux/amd64 -t $(IMAGE) --push .
 
 submission: info.json
 	@ORIG=$$(git rev-parse --abbrev-ref HEAD); \
