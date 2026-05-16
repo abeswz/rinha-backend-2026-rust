@@ -17,20 +17,20 @@ pub async fn ready_handler() -> &'static str {
 pub async fn fraud_score_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TransactionRequest>,
-) -> Json<FraudScoreResponse> {
-    let tx = into_transaction(req);
-    let decision = tokio::task::spawn_blocking({
-        let state = Arc::clone(&state);
-        move || state.use_case.execute(&tx)
+) -> impl axum::response::IntoResponse {
+    use tokio::time::{timeout, Duration};
+
+    let result = timeout(Duration::from_millis(1500), async move {
+        let tx = into_transaction(req);
+        state.use_case.execute(&tx)
     })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::error!(err = ?e, "spawn_blocking join failed; falling back to approved");
-        FraudDecision {
-            approved: true,
-            fraud_score: 0.0,
-        }
+    .await;
+
+    let decision = result.unwrap_or(FraudDecision {
+        approved: true,
+        fraud_score: 0.0,
     });
+
     Json(FraudScoreResponse {
         approved: decision.approved,
         fraud_score: decision.fraud_score,
