@@ -17,8 +17,7 @@ fn main() {
     tracing::info!("listening on {addr}");
 
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .max_blocking_threads(2)
+        .worker_threads(4)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime")
