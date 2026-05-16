@@ -15,9 +15,9 @@ fn main() {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap()
+        .expect("failed to build tokio runtime")
         .block_on(async {
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            axum::serve(listener, router).await.unwrap();
+            let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind listener");
+            axum::serve(listener, router).await.expect("server error");
         });
 }
