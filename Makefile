@@ -61,7 +61,7 @@ down:
 dev: $(BINARY) $(IVF_BIN)
 	PORT=$(PORT) \
 	IVF_PATH=$(IVF_BIN) \
-	IVF_NPROBE=4 \
+	IVF_NPROBE=24 \
 	MCC_PATH=resources/mcc_risk.json \
 	NORM_PATH=resources/normalization.json \
 	$(BINARY)

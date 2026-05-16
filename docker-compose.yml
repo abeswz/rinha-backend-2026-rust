@@ -20,7 +20,7 @@ services:
     build: .
     environment:
       - PORT=3000
-      - IVF_NPROBE=4
+      - IVF_NPROBE=24
     networks:
       - fraud-net
     deploy:
@@ -33,7 +33,7 @@ services:
     build: .
     environment:
       - PORT=3000
-      - IVF_NPROBE=4
+      - IVF_NPROBE=24
     networks:
       - fraud-net
     deploy:
