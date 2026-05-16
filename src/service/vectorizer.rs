@@ -25,6 +25,20 @@ struct NormalizationJson {
     max_merchant_avg_amount: f32,
 }
 
+impl Default for NormalizationConstants {
+    fn default() -> Self {
+        Self {
+            max_amount: 10_000.0,
+            max_installments: 12.0,
+            amount_vs_avg_ratio: 10.0,
+            max_minutes: 1_440.0,
+            max_km: 1_000.0,
+            max_tx_count_24h: 20.0,
+            max_merchant_avg_amount: 10_000.0,
+        }
+    }
+}
+
 impl NormalizationConstants {
     pub fn from_file(path: &Path) -> std::io::Result<Self> {
         let data = std::fs::read_to_string(path)?;
@@ -42,6 +56,7 @@ impl NormalizationConstants {
     }
 }
 
+#[derive(Default)]
 pub struct MccRiskMap(HashMap<String, f32>);
 
 impl MccRiskMap {
