@@ -7,12 +7,51 @@ pub struct ReferenceRepository {
 }
 
 impl ReferenceRepository {
-    pub fn from_file(path: &Path, nprobe: usize) -> std::io::Result<Self> {
-        let ivf = IvfIndex::load(path, nprobe)?;
+    pub fn from_file(path: &Path, nprobe_slow: usize) -> std::io::Result<Self> {
+        let ivf = IvfIndex::load(path, nprobe_slow)?;
         Ok(Self { ivf })
     }
 
-    pub fn knn(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
-        self.ivf.knn(query, k, self.ivf.nprobe_slow)
+    pub fn knn_adaptive(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
+        self.ivf.knn_adaptive(query, k)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_tiny_repo_ivf(name: &str) -> std::path::PathBuf {
+        let mut buf: Vec<u8> = Vec::new();
+        buf.extend_from_slice(&2u32.to_le_bytes());
+        buf.extend_from_slice(&14u32.to_le_bytes());
+        for _ in 0..14 { buf.extend_from_slice(&0.0f32.to_le_bytes()); }
+        for _ in 0..14 { buf.extend_from_slice(&10.0f32.to_le_bytes()); }
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes());
+        for _ in 0..3 {
+            for _ in 0..14 { buf.extend_from_slice(&half::f16::from_f32(0.1).to_le_bytes()); }
+            buf.push(0u8);
+        }
+        for _ in 0..3 {
+            for _ in 0..14 { buf.extend_from_slice(&half::f16::from_f32(10.0).to_le_bytes()); }
+            buf.push(1u8);
+        }
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, buf).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_knn_adaptive_legit_query() {
+        let path = write_tiny_repo_ivf("repo_adapt_legit.bin");
+        let repo = ReferenceRepository::from_file(&path, 24).unwrap();
+        let query = [0.0f32; 14];
+        let labels = repo.knn_adaptive(&query, 5);
+        assert_eq!(labels.len(), 5);
+        // With 6 entries total (3 legit near 0.0, 3 fraud near 10.0) and k=5,
+        // top-5 are: 3 legit + 2 fraud. Fraud votes <= 2 (legit-dominant).
+        assert!(labels.iter().filter(|&&l| l == 1).count() <= 2);
+        std::fs::remove_file(&path).ok();
     }
 }

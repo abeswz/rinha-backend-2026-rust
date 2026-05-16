@@ -10,7 +10,7 @@ pub struct ScoreFraudUseCase {
 impl ScoreFraudUseCase {
     pub fn execute(&self, tx: &Transaction) -> FraudDecision {
         let vector = self.vectorizer.vectorize(tx);
-        let labels = self.repository.knn(&vector.0, 5);
+        let labels = self.repository.knn_adaptive(&vector.0, 5);
         let fraud_count = labels.iter().filter(|&&l| l == 1).count();
         let fraud_score = fraud_count as f32 / 5.0;
         FraudDecision {
