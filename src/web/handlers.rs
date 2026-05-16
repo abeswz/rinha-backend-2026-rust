@@ -17,18 +17,13 @@ pub async fn fraud_score_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TransactionRequest>,
 ) -> impl axum::response::IntoResponse {
-    use tokio::time::{timeout, Duration};
-
-    let result = timeout(Duration::from_millis(1500), async move {
-        let tx = into_transaction(req);
-        state.use_case.execute(&tx)
-    })
-    .await;
-
-    let decision = result.unwrap_or(FraudDecision {
-        approved: true,
-        fraud_score: 0.0,
-    });
+    let tx = into_transaction(req);
+    let decision = tokio::task::spawn_blocking(move || state.use_case.execute(&tx))
+        .await
+        .unwrap_or(FraudDecision {
+            approved: true,
+            fraud_score: 0.0,
+        });
 
     Json(FraudScoreResponse {
         approved: decision.approved,
