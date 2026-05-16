@@ -1,24 +1,56 @@
 # IVF Micro-Optimizations Design
 
-**Goal:** Push p99 from ~2ms to sub-0.90ms remotely via four targeted changes — no topology or memory budget changes.
+**Goal:** Restore stability (p99 < 100ms, 0 HTTP errors) AND push p99 toward sub-1ms via targeted changes.
 
 ---
 
 ## Problem
 
-After IVF K=3000 + SIMD centroid distance + spawn_blocking removal, estimated p99 ~1.5-3ms due to:
+### Critical regression (remote test, score -3802.66)
+
+Image `79e9d85` (commit `570a83b perf(handler): remove spawn_blocking`) produced:
+- p99: 2001ms (k6 timeout, p99_score cut = -3000)
+- http_errors: 2535 (7.47% failure rate)
+- final_score: -3802.66 (was +4273.15 before)
+
+**Root cause:** Removing `spawn_blocking` caused Tokio worker threads to run CPU-bound KNN directly. Under Docker cgroup CPU throttling (0.475 CPU quota), the kernel throttles a worker thread mid-KNN. The Tokio reactor cannot schedule new tasks. Requests queue, hit the 2001ms k6 timeout, return as HTTP errors.
+
+This problem does NOT appear locally because the local machine runs at full CPU speed without cgroup throttling.
+
+### Latency optimizations (carry forward)
+
+After restoring spawn_blocking, remaining micro-optimizations reduce p99 further:
 - 3000 stack allocs + memcpys per request (centroid padding in hot loop)
 - CENTROID_BUF undersized (capacity=2048 < K=3000, reallocs on first request per thread)
-- 4 worker_threads on 0.475 CPU = high scheduling jitter at p99
-- nprobe_fast=3 scans 3000 vectors on fast path (room to cut to 2000)
+- nprobe_fast=3 scans 3000 vectors (room to cut to 2000 with nprobe_fast=2)
 
 ---
 
 ## Changes
 
+### 0. Restore spawn_blocking in handler (CRITICAL) (`src/web/handlers.rs`)
+
+**Current (broken):**
+```rust
+let decision = state.use_case.execute(&tx);
+```
+
+**New:**
+```rust
+let decision = tokio::task::spawn_blocking(move || state.use_case.execute(&tx))
+    .await
+    .expect("KNN task panicked");
+```
+
+No timeout — KNN is now sub-1ms (K=3000 + SIMD). A panic is a real bug; let it surface.
+
+**Why no timeout:** Original timeout (1600ms) existed to avoid HTTP errors from slow KNN. With K=3000 + SIMD, KNN takes ~0.3ms. Timeout adds complexity with no benefit. If KNN somehow hangs, the panic is the correct signal.
+
+**worker_threads stays at 4** (NOT changed to 2 as originally planned). With spawn_blocking, worker threads handle I/O and task scheduling — 4 is correct. Blocking pool handles KNN concurrently.
+
 ### 1. Pre-pad centroids to [f32;16] at load time (`src/repository/ivf.rs`)
 
-**Current:** `centroids: Vec<[f32;14]>`. Every call to `centroid_sq_dist` creates `[f32;16]` on the stack and copies 14 elements before calling SIMD.
+**Current:** `centroids: Vec<[f32;14]>`. Every call to `centroid_sq_dist` creates `[f32;16]` on stack and copies 14 elements before calling SIMD.
 
 **New:** `centroids: Vec<[f32;16]>`. Load time pads dims 14-15 to 0.0. `centroid_sq_dist` signature becomes `(&[f32;16], &[f32;16])` — calls SIMD directly, no internal copy.
 
@@ -26,7 +58,7 @@ After IVF K=3000 + SIMD centroid distance + spawn_blocking removal, estimated p9
 
 **Binary format unchanged** — on-disk format still 14×f32 per centroid; padding happens during `load()`.
 
-**Affected:** `IvfIndex` struct, `load()` centroid parsing, `centroid_sq_dist`, `centroid_sq_dist_simd` (signature stays `(&[f32;16], &[f32;16])` — no change needed). Test `test_centroid_sq_dist_correctness` centroid arg changes from `[f32;14]` to `[f32;16]`.
+**Affected:** `IvfIndex` struct, `load()` centroid parsing, `centroid_sq_dist`. Test `test_centroid_sq_dist_correctness` centroid arg changes from `[f32;14]` to `[f32;16]`.
 
 ### 2. CENTROID_BUF capacity 2048→3072 (`src/repository/ivf.rs`)
 
@@ -34,46 +66,43 @@ After IVF K=3000 + SIMD centroid distance + spawn_blocking removal, estimated p9
 
 **New:** `Vec::with_capacity(3072)`. No realloc ever.
 
-### 3. worker_threads 4→2 (`src/main.rs`)
+### 3. nprobe_fast=2 in docker-compose (`docker-compose.yml`)
 
-**Current:** 4 threads on 0.475 CPU = kernel preempts each thread ~88% of the time. High p99 tail from scheduling jitter.
+**Current:** `IVF_NPROBE_FAST` not set → default 3 → 3 clusters × ~1000 vectors = 3000 comparisons on fast path.
 
-**New:** 2 threads → each gets ~24% CPU time, fewer preemptions, lower p99 tail.
+**New:** `IVF_NPROBE_FAST=2` → 2000 comparisons, ~33% less blocking-thread CPU time per request.
 
-**Throughput note:** At expected load (~450 req/s per instance), 2 threads with sub-1ms processing time is sufficient. Tokio is non-blocking; threads are not blocked waiting.
+**Risk:** May increase FN. If FN > 20 in load test, revert to `IVF_NPROBE_FAST=3` — no recompile needed.
 
-### 4. nprobe_fast=2 in docker-compose (`docker-compose.yml`)
+---
 
-**Current:** Default `IVF_NPROBE_FAST=3` (3 clusters × ~1000 vectors = 3000 vector comparisons on fast path).
+## Implementation Order
 
-**New:** `IVF_NPROBE_FAST=2` (2 clusters × ~1000 vectors = 2000 comparisons, ~33% less work).
-
-**Risk:** May increase FN (ambiguous queries near cluster boundaries get fewer probes on Stage 1, triggering Stage 2 less accurately). If FN increases significantly after load test, revert to `IVF_NPROBE_FAST=3` — no recompile needed.
-
-**Reversibility:** docker-compose env var only. Zero code change to revert.
+1. Restore spawn_blocking first — fixes the regression
+2. Pre-pad centroids + CENTROID_BUF — perf improvements
+3. nprobe_fast=2 in docker-compose — last, easiest to revert
 
 ---
 
 ## Testing
 
-- `cargo test` — all 34 tests must pass
+- `cargo test` — all 34 tests must pass after each step
 - `cargo clippy --all-targets --all-features -- -D warnings` — zero warnings
-- `make load` — compare p99 and FP/FN vs baseline (FP=5, FN=9 @ nprobe_fast=3)
-- Accept FN increase up to ~20 before reverting nprobe_fast
+- `make load` locally after all changes — compare p99 and FP/FN vs pre-regression baseline (FP=5, FN=9)
+- Accept FN ≤ 20 with nprobe_fast=2; revert to 3 otherwise
 
 ---
 
-## Estimated Impact
+## Estimated Impact (after all changes)
 
-| Change | p99 reduction |
-|--------|--------------|
-| Pre-padded centroids | ~0.3ms |
-| CENTROID_BUF capacity | ~0.1ms (tail) |
-| worker_threads=2 | ~0.5-0.8ms (p99 jitter) |
-| nprobe_fast=2 | ~0.1ms |
-| **Total** | **~1.0-1.3ms** |
+| Change | Effect |
+|--------|--------|
+| Restore spawn_blocking | Fixes p99 2001ms → ~5-15ms, eliminates HTTP errors |
+| Pre-padded centroids | -0.3ms off KNN time in blocking pool |
+| CENTROID_BUF capacity | Eliminates realloc tail latency |
+| nprobe_fast=2 | -0.1ms off KNN time, ~33% less CPU per fast-path call |
 
-Target: p99 remote ≤ 0.90ms. Saturates `p99_score` at 3000 if p99 ≤ 1ms.
+Remote p99 target: 5-15ms (was 83ms before IVF). Sub-1ms is possible if the blocking pool overhead is negligible.
 
 ---
 
@@ -81,7 +110,7 @@ Target: p99 remote ≤ 0.90ms. Saturates `p99_score` at 3000 if p99 ≤ 1ms.
 
 | Change | Rollback |
 |--------|---------|
+| Restore spawn_blocking | Non-negotiable — do not revert |
 | Pre-padded centroids | git revert |
 | CENTROID_BUF capacity | git revert |
-| worker_threads=2 | git revert |
-| nprobe_fast=2 | Change `IVF_NPROBE_FAST=2→3` in docker-compose |
+| nprobe_fast=2 | `IVF_NPROBE_FAST=2→3` in docker-compose |
