@@ -17,7 +17,7 @@ fn main() {
 
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
-        .max_blocking_threads(8)
+        .max_blocking_threads(2)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime")
