@@ -11,6 +11,7 @@ fn main() {
     let config = Config::from_env();
     let state = Arc::new(AppState::build(&config).expect("failed to initialize AppState"));
     let addr = format!("0.0.0.0:{}", config.port);
+    let socket_path = std::env::var("SOCKET_PATH").ok();
     let router = build_router(state);
 
     tracing::info!("listening on {addr}");
@@ -22,9 +23,26 @@ fn main() {
         .build()
         .expect("failed to build tokio runtime")
         .block_on(async {
-            let listener = tokio::net::TcpListener::bind(&addr)
+            let tcp = tokio::net::TcpListener::bind(&addr)
                 .await
-                .expect("failed to bind listener");
-            axum::serve(listener, router).await.expect("server error");
+                .expect("failed to bind tcp listener");
+
+            if let Some(path) = socket_path {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::remove_file(&path);
+                let unix = tokio::net::UnixListener::bind(&path)
+                    .expect("failed to bind unix socket");
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777))
+                    .expect("failed to set socket permissions");
+                tracing::info!("also listening on unix:{path}");
+                let (r1, r2) = tokio::join!(
+                    axum::serve(tcp, router.clone()),
+                    axum::serve(unix, router),
+                );
+                r1.expect("tcp server error");
+                r2.expect("unix server error");
+            } else {
+                axum::serve(tcp, router).await.expect("server error");
+            }
         });
 }

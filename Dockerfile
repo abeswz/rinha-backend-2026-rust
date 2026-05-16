@@ -27,7 +27,7 @@ COPY --from=ivf-builder /build/resources/ivf_index.bin resources/ivf_index.bin
 ENV RUSTFLAGS="-C target-feature=+avx2,+fma,+f16c,+bmi2,+popcnt -C strip=symbols"
 RUN cargo build --release --bin fraud-detection
 
-FROM gcr.io/distroless/cc-debian12:debug
+FROM gcr.io/distroless/cc-debian12
 WORKDIR /app
 COPY --from=rust-builder /app/target/release/fraud-detection ./
 COPY --from=ivf-builder /build/resources/ivf_index.bin resources/ivf_index.bin
