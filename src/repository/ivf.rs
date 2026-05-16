@@ -9,7 +9,6 @@ thread_local! {
 
 pub struct IvfIndex {
     k: usize,
-    #[allow(dead_code)]
     nprobe_fast: usize,
     pub(crate) nprobe_slow: usize,
     centroids: Vec<[f32; 14]>,
@@ -148,6 +147,17 @@ impl IvfIndex {
 
             top.iter().map(|&(_, label)| label).collect()
         })
+    }
+
+    pub fn knn_adaptive(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
+        let stage1 = self.knn(query, k, self.nprobe_fast);
+        let fraud_votes = stage1.iter().filter(|&&l| l == 1).count();
+        // Unambiguous: 0-1 fraud votes (clear legit) or k-1..k fraud votes (clear fraud)
+        if fraud_votes <= 1 || fraud_votes >= k.saturating_sub(1) {
+            return stage1;
+        }
+        // Ambiguous: run full slow-path search
+        self.knn(query, k, self.nprobe_slow)
     }
 }
 
@@ -344,6 +354,130 @@ mod tests {
         let labels = idx.knn(&query, 3, 1);
         assert_eq!(labels.len(), 3);
         assert!(labels.iter().all(|&l| l == 0));
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// 6-cluster fixture designed to trigger Stage 2.
+    ///
+    /// Centroids (all-equal 14-dim vectors):
+    ///   C0=[1.0;14]  C1=[2.0;14]  C2=[3.0;14]
+    ///   C3=[4.0;14]  C4=[5.0;14]  C5=[6.0;14]
+    ///
+    /// Entries near query [2.5;14]:
+    ///   C2: [3.0;14](legit), [2.4;14](fraud)
+    ///   C3: [4.0;14](legit), [2.6;14](fraud)
+    ///   C5: [2.45;14](fraud), [2.50;14](fraud), [2.55;14](fraud)
+    ///
+    /// With nprobe_fast=5: probes C0-C4 → returns 2 fraud (ambiguous).
+    /// With nprobe_slow=6: also probes C5 → returns 5 fraud (decisive).
+    fn make_staged_ivf_bytes() -> Vec<u8> {
+        let mut buf: Vec<u8> = Vec::new();
+
+        // header: k=6, d=14
+        buf.extend_from_slice(&6u32.to_le_bytes());
+        buf.extend_from_slice(&14u32.to_le_bytes());
+
+        // centroids: 6 × [v;14] for v in 1..=6
+        for v in 1u32..=6 {
+            for _ in 0..14 {
+                buf.extend_from_slice(&(v as f32).to_le_bytes());
+            }
+        }
+
+        // list sizes: [3, 2, 2, 2, 2, 3]
+        for &sz in &[3u32, 2, 2, 2, 2, 3] {
+            buf.extend_from_slice(&sz.to_le_bytes());
+        }
+
+        fn push_entry(buf: &mut Vec<u8>, val: f32, label: u8) {
+            let v = half::f16::from_f32(val);
+            for _ in 0..14 {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+            buf.push(label);
+        }
+
+        // C0 (centroid=[1;14]): 3 legit
+        push_entry(&mut buf, 1.0, 0);
+        push_entry(&mut buf, 1.1, 0);
+        push_entry(&mut buf, 1.2, 0);
+
+        // C1 (centroid=[2;14]): 2 legit
+        push_entry(&mut buf, 2.0, 0);
+        push_entry(&mut buf, 2.1, 0);
+
+        // C2 (centroid=[3;14]): 1 legit + 1 fraud
+        push_entry(&mut buf, 3.0, 0);
+        push_entry(&mut buf, 2.4, 1);
+
+        // C3 (centroid=[4;14]): 1 legit + 1 fraud
+        push_entry(&mut buf, 4.0, 0);
+        push_entry(&mut buf, 2.6, 1);
+
+        // C4 (centroid=[5;14]): 2 legit
+        push_entry(&mut buf, 5.0, 0);
+        push_entry(&mut buf, 5.1, 0);
+
+        // C5 (centroid=[6;14]): 3 fraud entries near [2.5;14]
+        // Straggler entries — assigned to far cluster at train time
+        push_entry(&mut buf, 2.45, 1);
+        push_entry(&mut buf, 2.50, 1);
+        push_entry(&mut buf, 2.55, 1);
+
+        buf
+    }
+
+    fn write_staged_ivf(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        let data = make_staged_ivf_bytes();
+        std::fs::write(&path, data).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_knn_adaptive_unambiguous_legit_uses_stage1() {
+        let path = write_tiny_ivf("test_adapt_legit.bin");
+        let idx = IvfIndex::load(&path, 24).unwrap();
+        // query near legit cluster with k=3: top-3 are all legit (0 fraud votes) → Stage 1 returns
+        // tiny fixture has 2 clusters of 3 entries each; nprobe_fast=5 is clamped to k=2 so both
+        // clusters are probed, but the 3 closest entries to [0;14] are all legit (label=0).
+        let labels = idx.knn_adaptive(&[0.0f32; 14], 3);
+        assert_eq!(labels.len(), 3);
+        assert_eq!(labels.iter().filter(|&&l| l == 1).count(), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_knn_adaptive_unambiguous_fraud_uses_stage1() {
+        let path = write_tiny_ivf("test_adapt_fraud.bin");
+        let idx = IvfIndex::load(&path, 24).unwrap();
+        // query near fraud cluster with k=3: top-3 are all fraud → k-1=2 threshold, count=3 >= 2
+        // → Stage 1 returns immediately (decisive)
+        let labels = idx.knn_adaptive(&[10.0f32; 14], 3);
+        assert_eq!(labels.len(), 3);
+        assert!(labels.iter().filter(|&&l| l == 1).count() >= 2);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_knn_adaptive_ambiguous_triggers_stage2() {
+        let path = write_staged_ivf("test_adapt_staged.bin");
+        // nprobe_slow=6 so Stage 2 probes C5 (which has straggler fraud entries)
+        let idx = IvfIndex::load(&path, 6).unwrap();
+        let query = [2.5f32; 14];
+
+        // Stage 1 (nprobe=5) → 2 fraud (ambiguous) → triggers Stage 2
+        // Stage 2 (nprobe=6) finds C5's straggler fraud entries → 5 fraud
+        let labels = idx.knn_adaptive(&query, 5);
+        assert_eq!(labels.len(), 5);
+        let fraud_count = labels.iter().filter(|&&l| l == 1).count();
+        assert!(fraud_count >= 4, "Stage 2 should find straggler fraud entries, got {fraud_count} fraud");
+
+        // Verify Stage 1 alone would have returned only 2 fraud
+        let stage1_labels = idx.knn(&query, 5, 5);
+        let stage1_fraud = stage1_labels.iter().filter(|&&l| l == 1).count();
+        assert_eq!(stage1_fraud, 2, "Stage 1 should be ambiguous (2 fraud), got {stage1_fraud}");
+
         std::fs::remove_file(&path).ok();
     }
 }
