@@ -88,4 +88,4 @@ with open(OUTPUT, "wb") as f:
             f.write(struct.pack("B", label))
 
 size_mb = OUTPUT.stat().st_size / 1024**2
-print(f"Done. {OUTPUT} = {size_mb:.1f} MB (expected ~87 MB)", flush=True)
+print(f"Done. {OUTPUT} = {size_mb:.1f} MB (expected ~83 MB)", flush=True)
