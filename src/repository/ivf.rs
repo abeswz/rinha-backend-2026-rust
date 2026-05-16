@@ -115,7 +115,7 @@ impl IvfIndex {
                 self.centroids
                     .iter()
                     .enumerate()
-                    .map(|(i, c)| (centroid_sq_dist(query, c), i)),
+                    .map(|(i, c)| (centroid_sq_dist(&q16, c), i)),
             );
 
             // O(K) partial select instead of O(K log K) full sort
@@ -164,15 +164,45 @@ impl IvfIndex {
     }
 }
 
-fn centroid_sq_dist(query: &[f32; 14], centroid: &[f32; 14]) -> f32 {
-    query
-        .iter()
-        .zip(centroid.iter())
-        .map(|(&q, &c)| {
-            let d = q - c;
-            d * d
-        })
-        .sum()
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn centroid_sq_dist_simd(query16: &[f32; 16], centroid16: &[f32; 16]) -> f32 {
+    use std::arch::x86_64::*;
+
+    let q0 = _mm256_loadu_ps(query16.as_ptr());
+    let c0 = _mm256_loadu_ps(centroid16.as_ptr());
+    let diff0 = _mm256_sub_ps(q0, c0);
+    let sq0 = _mm256_mul_ps(diff0, diff0);
+
+    let q1 = _mm256_loadu_ps(query16.as_ptr().add(8));
+    let c1 = _mm256_loadu_ps(centroid16.as_ptr().add(8));
+    let diff1 = _mm256_sub_ps(q1, c1);
+    let sq1 = _mm256_mul_ps(diff1, diff1);
+
+    let sum = _mm256_add_ps(sq0, sq1);
+    let hi = _mm256_extractf128_ps(sum, 1);
+    let lo = _mm256_castps256_ps128(sum);
+    let sum4 = _mm_add_ps(lo, hi);
+    let sum2 = _mm_add_ps(sum4, _mm_movehl_ps(sum4, sum4));
+    let sum1 = _mm_add_ss(sum2, _mm_shuffle_ps(sum2, sum2, 1));
+    _mm_cvtss_f32(sum1)
+}
+
+fn centroid_sq_dist(query16: &[f32; 16], centroid: &[f32; 14]) -> f32 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") {
+            let mut c16 = [0.0f32; 16];
+            c16[..14].copy_from_slice(centroid);
+            return unsafe { centroid_sq_dist_simd(query16, &c16) };
+        }
+    }
+    let mut sum = 0.0f32;
+    for i in 0..14 {
+        let d = query16[i] - centroid[i];
+        sum += d * d;
+    }
+    sum
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -488,5 +518,22 @@ mod tests {
         );
 
         std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_centroid_sq_dist_correctness() {
+        let mut q16 = [0.0f32; 16];
+        q16[..14].copy_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]);
+        let centroid = [0.5f32; 14];
+
+        let expected: f32 = (0..14usize)
+            .map(|i| { let d = q16[i] - centroid[i]; d * d })
+            .sum();
+
+        let result = centroid_sq_dist(&q16, &centroid);
+        assert!(
+            (result - expected).abs() < 1e-3,
+            "centroid_sq_dist diverges: got {result}, expected {expected}"
+        );
     }
 }
