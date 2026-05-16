@@ -17,12 +17,10 @@ impl Config {
                 .parse()
                 .expect("PORT must be a valid port number"),
             ivf_path: PathBuf::from(
-                std::env::var("IVF_PATH")
-                    .unwrap_or_else(|_| "resources/ivf_index.bin".to_string()),
+                std::env::var("IVF_PATH").unwrap_or_else(|_| "resources/ivf_index.bin".to_string()),
             ),
             mcc_path: PathBuf::from(
-                std::env::var("MCC_PATH")
-                    .unwrap_or_else(|_| "resources/mcc_risk.json".to_string()),
+                std::env::var("MCC_PATH").unwrap_or_else(|_| "resources/mcc_risk.json".to_string()),
             ),
             norm_path: PathBuf::from(
                 std::env::var("NORM_PATH")

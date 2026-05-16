@@ -17,7 +17,9 @@ fn main() {
         .build()
         .expect("failed to build tokio runtime")
         .block_on(async {
-            let listener = tokio::net::TcpListener::bind(&addr).await.expect("failed to bind listener");
+            let listener = tokio::net::TcpListener::bind(&addr)
+                .await
+                .expect("failed to bind listener");
             axum::serve(listener, router).await.expect("server error");
         });
 }
