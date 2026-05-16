@@ -17,9 +17,7 @@ services:
           memory: "10MB"
 
   api1:
-    build:
-      context: .
-      network: host
+    build: .
     environment:
       - PORT=3000
       - IVF_NPROBE=24

@@ -46,7 +46,8 @@ $(IVF_BIN):
 # ── Docker Compose (nginx:9999 → api1:3000 + api2:3000) ───────────────────
 
 up:
-	docker compose up --build -d
+	docker compose build --network host
+	docker compose up -d
 	@echo "Waiting for $(READY_URL)..."
 	@until curl -sf $(READY_URL) > /dev/null 2>&1; do \
 		printf '.'; sleep 1; \
