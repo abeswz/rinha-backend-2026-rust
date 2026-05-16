@@ -523,11 +523,16 @@ mod tests {
     #[test]
     fn test_centroid_sq_dist_correctness() {
         let mut q16 = [0.0f32; 16];
-        q16[..14].copy_from_slice(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0]);
+        q16[..14].copy_from_slice(&[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
+        ]);
         let centroid = [0.5f32; 14];
 
         let expected: f32 = (0..14usize)
-            .map(|i| { let d = q16[i] - centroid[i]; d * d })
+            .map(|i| {
+                let d = q16[i] - centroid[i];
+                d * d
+            })
             .sum();
 
         let result = centroid_sq_dist(&q16, &centroid);

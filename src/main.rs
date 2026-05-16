@@ -29,15 +29,13 @@ fn main() {
             if let Some(path) = socket_path {
                 use std::os::unix::fs::PermissionsExt;
                 let _ = std::fs::remove_file(&path);
-                let unix = tokio::net::UnixListener::bind(&path)
-                    .expect("failed to bind unix socket");
+                let unix =
+                    tokio::net::UnixListener::bind(&path).expect("failed to bind unix socket");
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777))
                     .expect("failed to set socket permissions");
                 tracing::info!("also listening on unix:{path}");
-                let (r1, r2) = tokio::join!(
-                    axum::serve(tcp, router.clone()),
-                    axum::serve(unix, router),
-                );
+                let (r1, r2) =
+                    tokio::join!(axum::serve(tcp, router.clone()), axum::serve(unix, router),);
                 r1.expect("tcp server error");
                 r2.expect("unix server error");
             } else {
