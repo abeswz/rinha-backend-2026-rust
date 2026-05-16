@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 thread_local! {
-    static CENTROID_BUF: RefCell<Vec<(f32, usize)>> = RefCell::new(Vec::with_capacity(2048));
+    static CENTROID_BUF: RefCell<Vec<(f32, usize)>> = RefCell::new(Vec::with_capacity(3072));
 }
 
 pub struct IvfIndex {
