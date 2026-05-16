@@ -149,6 +149,9 @@ impl IvfIndex {
         })
     }
 
+    /// Two-stage adaptive KNN search. Requires k >= 4 for stage-2 to have a meaningful
+    /// ambiguous zone; with k < 4 the condition `fraud_votes <= 1 || fraud_votes >= k-1`
+    /// covers all possible vote counts and stage-2 never fires.
     pub fn knn_adaptive(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
         let stage1 = self.knn(query, k, self.nprobe_fast);
         let fraud_votes = stage1.iter().filter(|&&l| l == 1).count();
@@ -317,7 +320,7 @@ mod tests {
 
     #[test]
     fn test_knn_nprobe_clamped_to_k() {
-        let path = write_tiny_ivf("test_ivf_clamp");
+        let path = write_tiny_ivf("test_ivf_clamp.bin");
         let idx = IvfIndex::load(&path, 999).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 3, 999);
@@ -328,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_knn_mixed_labels_ordered_by_distance() {
-        let path = write_tiny_ivf("test_ivf_mixed");
+        let path = write_tiny_ivf("test_ivf_mixed.bin");
         let idx = IvfIndex::load(&path, 2).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 5, 2);
