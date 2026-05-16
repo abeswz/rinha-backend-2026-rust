@@ -15,7 +15,9 @@ pub async fn fraud_score_handler(
     Json(req): Json<TransactionRequest>,
 ) -> impl axum::response::IntoResponse {
     let tx = into_transaction(req);
-    let decision = state.use_case.execute(&tx);
+    let decision = tokio::task::spawn_blocking(move || state.use_case.execute(&tx))
+        .await
+        .expect("KNN task panicked");
     Json(FraudScoreResponse {
         approved: decision.approved,
         fraud_score: decision.fraud_score,
