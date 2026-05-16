@@ -16,7 +16,7 @@ pub struct IvfIndex {
 }
 
 impl IvfIndex {
-    pub fn load(path: &Path, nprobe_slow: usize) -> std::io::Result<Self> {
+    pub fn load(path: &Path, nprobe_fast: usize, nprobe_slow: usize) -> std::io::Result<Self> {
         let data = std::fs::read(path)?;
         if data.len() < 8 {
             return Err(std::io::Error::new(
@@ -94,7 +94,7 @@ impl IvfIndex {
 
         Ok(Self {
             k,
-            nprobe_fast: 5,
+            nprobe_fast,
             nprobe_slow,
             centroids,
             lists,
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn test_load_parses_header() {
         let path = write_tiny_ivf("test_ivf_header.bin");
-        let idx = IvfIndex::load(&path, 1).unwrap();
+        let idx = IvfIndex::load(&path, 5, 1).unwrap();
         assert_eq!(idx.k, 2);
         assert_eq!(idx.lists.len(), 2);
         assert_eq!(idx.lists[0].len(), 3);
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn test_knn_query_near_legit_cluster() {
         let path = write_tiny_ivf("test_ivf_legit.bin");
-        let idx = IvfIndex::load(&path, 1).unwrap();
+        let idx = IvfIndex::load(&path, 5, 1).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 3, 1);
         assert_eq!(labels.len(), 3);
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_knn_query_near_fraud_cluster() {
         let path = write_tiny_ivf("test_ivf_fraud.bin");
-        let idx = IvfIndex::load(&path, 1).unwrap();
+        let idx = IvfIndex::load(&path, 5, 1).unwrap();
         let query = [10.0f32; 14];
         let labels = idx.knn(&query, 3, 1);
         assert_eq!(labels.len(), 3);
@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn test_knn_nprobe_2_returns_from_both_clusters() {
         let path = write_tiny_ivf("test_ivf_nprobe2.bin");
-        let idx = IvfIndex::load(&path, 2).unwrap();
+        let idx = IvfIndex::load(&path, 5, 2).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 3, 2);
         assert_eq!(labels.len(), 3);
@@ -314,14 +314,14 @@ mod tests {
     fn test_load_rejects_truncated_file() {
         let path = std::env::temp_dir().join("test_ivf_truncated.bin");
         std::fs::write(&path, [0u8; 4]).unwrap();
-        assert!(IvfIndex::load(&path, 1).is_err());
+        assert!(IvfIndex::load(&path, 5, 1).is_err());
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_knn_nprobe_clamped_to_k() {
         let path = write_tiny_ivf("test_ivf_clamp.bin");
-        let idx = IvfIndex::load(&path, 999).unwrap();
+        let idx = IvfIndex::load(&path, 5, 999).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 3, 999);
         assert_eq!(labels.len(), 3);
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn test_knn_mixed_labels_ordered_by_distance() {
         let path = write_tiny_ivf("test_ivf_mixed.bin");
-        let idx = IvfIndex::load(&path, 2).unwrap();
+        let idx = IvfIndex::load(&path, 5, 2).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 5, 2);
         assert_eq!(labels.len(), 5);
@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn test_knn_explicit_nprobe_param() {
         let path = write_tiny_ivf("test_ivf_explicit_nprobe.bin");
-        let idx = IvfIndex::load(&path, 24).unwrap();
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
         let query = [0.0f32; 14];
         let labels = idx.knn(&query, 3, 1);
         assert_eq!(labels.len(), 3);
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn test_knn_adaptive_unambiguous_legit_uses_stage1() {
         let path = write_tiny_ivf("test_adapt_legit.bin");
-        let idx = IvfIndex::load(&path, 24).unwrap();
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
         // query near legit cluster with k=3: top-3 are all legit (0 fraud votes) → Stage 1 returns
         // tiny fixture has 2 clusters of 3 entries each; nprobe_fast=5 is clamped to k=2 so both
         // clusters are probed, but the 3 closest entries to [0;14] are all legit (label=0).
@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn test_knn_adaptive_unambiguous_fraud_uses_stage1() {
         let path = write_tiny_ivf("test_adapt_fraud.bin");
-        let idx = IvfIndex::load(&path, 24).unwrap();
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
         // query near fraud cluster with k=3: top-3 are all fraud → k-1=2 threshold, count=3 >= 2
         // → Stage 1 returns immediately (decisive)
         let labels = idx.knn_adaptive(&[10.0f32; 14], 3);
@@ -466,7 +466,7 @@ mod tests {
     fn test_knn_adaptive_ambiguous_triggers_stage2() {
         let path = write_staged_ivf("test_adapt_staged.bin");
         // nprobe_slow=6 so Stage 2 probes C5 (which has straggler fraud entries)
-        let idx = IvfIndex::load(&path, 6).unwrap();
+        let idx = IvfIndex::load(&path, 5, 6).unwrap();
         let query = [2.5f32; 14];
 
         // Stage 1 (nprobe=5) → 2 fraud (ambiguous) → triggers Stage 2

@@ -23,7 +23,13 @@ impl AppState {
                 "IVF_NPROBE must be >= 1",
             ));
         }
-        let repository = ReferenceRepository::from_file(&config.ivf_path, config.nprobe_slow)?;
+        if config.nprobe_fast == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "IVF_NPROBE_FAST must be >= 1",
+            ));
+        }
+        let repository = ReferenceRepository::from_file(&config.ivf_path, config.nprobe_fast, config.nprobe_slow)?;
         let norm = NormalizationConstants::from_file(&config.norm_path)?;
         let mcc_risk = MccRiskMap::from_file(&config.mcc_path)?;
         let vectorizer = Vectorizer::new(norm, mcc_risk);
@@ -56,6 +62,7 @@ mod tests {
             ivf_path: PathBuf::from("resources/ivf_index.bin"),
             mcc_path: PathBuf::from("resources/mcc_risk.json"),
             norm_path: PathBuf::from("resources/normalization.json"),
+            nprobe_fast: 3,
             nprobe_slow: 24,
         };
         // Only run if resources exist (CI/CD may not have them)

@@ -10,6 +10,7 @@ static STATE: Lazy<Arc<AppState>> = Lazy::new(|| {
         ivf_path: PathBuf::from("resources/ivf_index.bin"),
         mcc_path: PathBuf::from("resources/mcc_risk.json"),
         norm_path: PathBuf::from("resources/normalization.json"),
+        nprobe_fast: 3,
         nprobe_slow: 8,
     };
     Arc::new(

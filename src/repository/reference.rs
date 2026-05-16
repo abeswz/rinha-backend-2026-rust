@@ -7,8 +7,8 @@ pub struct ReferenceRepository {
 }
 
 impl ReferenceRepository {
-    pub fn from_file(path: &Path, nprobe_slow: usize) -> std::io::Result<Self> {
-        let ivf = IvfIndex::load(path, nprobe_slow)?;
+    pub fn from_file(path: &Path, nprobe_fast: usize, nprobe_slow: usize) -> std::io::Result<Self> {
+        let ivf = IvfIndex::load(path, nprobe_fast, nprobe_slow)?;
         Ok(Self { ivf })
     }
 
@@ -53,12 +53,10 @@ mod tests {
     #[test]
     fn test_knn_adaptive_legit_query() {
         let path = write_tiny_repo_ivf("repo_adapt_legit.bin");
-        let repo = ReferenceRepository::from_file(&path, 24).unwrap();
+        let repo = ReferenceRepository::from_file(&path, 5, 24).unwrap();
         let query = [0.0f32; 14];
         let labels = repo.knn_adaptive(&query, 5);
         assert_eq!(labels.len(), 5);
-        // With 6 entries total (3 legit near 0.0, 3 fraud near 10.0) and k=5,
-        // top-5 are: 3 legit + 2 fraud. Fraud votes <= 2 (legit-dominant).
         assert!(labels.iter().filter(|&&l| l == 1).count() <= 2);
         std::fs::remove_file(&path).ok();
     }

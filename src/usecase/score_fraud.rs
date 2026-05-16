@@ -54,7 +54,7 @@ mod tests {
         }
         let path = std::env::temp_dir().join("usecase_test_ivf.bin");
         std::fs::write(&path, &buf).unwrap();
-        ReferenceRepository::from_file(&path, 24).unwrap()
+        ReferenceRepository::from_file(&path, 3, 24).unwrap()
     }
 
     fn make_tx(amount: f32) -> Transaction {
