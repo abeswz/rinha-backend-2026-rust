@@ -27,7 +27,7 @@ from sklearn.cluster import MiniBatchKMeans
 
 INPUT = Path("resources/references.json.gz")
 OUTPUT = Path("resources/ivf_index.bin")
-K = 1732
+K = 3000
 BATCH_SIZE = 50_000
 N_INIT = 3
 RANDOM_STATE = 42
