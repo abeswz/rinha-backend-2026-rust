@@ -2,6 +2,9 @@ use fraud_detection::{config::Config, web::router::build_router, AppState};
 use std::sync::Arc;
 use tracing_subscriber::{fmt, EnvFilter};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
@@ -13,7 +16,8 @@ fn main() {
     tracing::info!("listening on {addr}");
 
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
+        .worker_threads(2)
+        .max_blocking_threads(8)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime")
