@@ -11,7 +11,7 @@ pub struct IvfIndex {
     k: usize,
     nprobe_fast: usize,
     pub(crate) nprobe_slow: usize,
-    centroids: Vec<[f32; 14]>,
+    centroids: Vec<[f32; 16]>,
     lists: Vec<Vec<([f16; 16], u8)>>,
 }
 
@@ -47,8 +47,8 @@ impl IvfIndex {
         }
         let mut centroids = Vec::with_capacity(k);
         for _ in 0..k {
-            let mut c = [0.0f32; 14];
-            for elem in &mut c {
+            let mut c = [0.0f32; 16];
+            for elem in &mut c[..14] {
                 *elem = f32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
                 pos += 4;
             }
@@ -188,18 +188,16 @@ unsafe fn centroid_sq_dist_simd(query16: &[f32; 16], centroid16: &[f32; 16]) -> 
     _mm_cvtss_f32(sum1)
 }
 
-fn centroid_sq_dist(query16: &[f32; 16], centroid: &[f32; 14]) -> f32 {
+fn centroid_sq_dist(query16: &[f32; 16], centroid16: &[f32; 16]) -> f32 {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
-            let mut c16 = [0.0f32; 16];
-            c16[..14].copy_from_slice(centroid);
-            return unsafe { centroid_sq_dist_simd(query16, &c16) };
+            return unsafe { centroid_sq_dist_simd(query16, centroid16) };
         }
     }
     let mut sum = 0.0f32;
     for i in 0..14 {
-        let d = query16[i] - centroid[i];
+        let d = query16[i] - centroid16[i];
         sum += d * d;
     }
     sum
@@ -526,7 +524,8 @@ mod tests {
         q16[..14].copy_from_slice(&[
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
         ]);
-        let centroid = [0.5f32; 14];
+        let mut centroid = [0.0f32; 16];
+        centroid[..14].fill(0.5);
 
         let expected: f32 = (0..14usize)
             .map(|i| {
