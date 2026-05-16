@@ -7,7 +7,6 @@ use crate::{
     web::dto::{FraudScoreResponse, TransactionRequest},
 };
 use axum::{extract::State, Json};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 pub async fn ready_handler() -> &'static str {
@@ -46,11 +45,7 @@ fn into_transaction(req: TransactionRequest) -> Transaction {
         customer: Customer {
             avg_amount: req.customer.avg_amount,
             tx_count_24h: req.customer.tx_count_24h,
-            known_merchants: req
-                .customer
-                .known_merchants
-                .into_iter()
-                .collect::<HashSet<_>>(),
+            known_merchants: req.customer.known_merchants,
         },
         merchant: Merchant {
             id: req.merchant.id,

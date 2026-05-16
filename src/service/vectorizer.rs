@@ -115,7 +115,6 @@ mod tests {
     use super::*;
     use crate::domain::transaction::*;
     use chrono::DateTime;
-    use std::collections::HashSet;
 
     fn make_vectorizer() -> Vectorizer {
         let norm =
@@ -138,7 +137,7 @@ mod tests {
             customer: Customer {
                 avg_amount: 82.24,
                 tx_count_24h: 3,
-                known_merchants: HashSet::from(["MERC-003".to_string(), "MERC-016".to_string()]),
+                known_merchants: vec!["MERC-003".to_string(), "MERC-016".to_string()],
             },
             merchant: Merchant {
                 id: "MERC-016".to_string(),
@@ -165,11 +164,11 @@ mod tests {
             customer: Customer {
                 avg_amount: 81.28,
                 tx_count_24h: 20,
-                known_merchants: HashSet::from([
+                known_merchants: vec![
                     "MERC-008".to_string(),
                     "MERC-007".to_string(),
                     "MERC-005".to_string(),
-                ]),
+                ],
             },
             merchant: Merchant {
                 id: "MERC-068".to_string(),

@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use std::collections::HashSet;
 
 pub struct Transaction {
     pub id: String,
@@ -15,7 +14,7 @@ pub struct Transaction {
 pub struct Customer {
     pub avg_amount: f32,
     pub tx_count_24h: u32,
-    pub known_merchants: HashSet<String>,
+    pub known_merchants: Vec<String>,
 }
 
 pub struct Merchant {
