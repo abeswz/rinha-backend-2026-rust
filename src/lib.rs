@@ -17,13 +17,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn build(config: &Config) -> std::io::Result<Self> {
-        if config.nprobe == 0 {
+        if config.nprobe_slow == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "IVF_NPROBE must be >= 1",
             ));
         }
-        let repository = ReferenceRepository::from_file(&config.ivf_path, config.nprobe)?;
+        let repository = ReferenceRepository::from_file(&config.ivf_path, config.nprobe_slow)?;
         let norm = NormalizationConstants::from_file(&config.norm_path)?;
         let mcc_risk = MccRiskMap::from_file(&config.mcc_path)?;
         let vectorizer = Vectorizer::new(norm, mcc_risk);

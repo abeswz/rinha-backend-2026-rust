@@ -5,7 +5,7 @@ pub struct Config {
     pub ivf_path: PathBuf,
     pub mcc_path: PathBuf,
     pub norm_path: PathBuf,
-    pub nprobe: usize,
+    pub nprobe_slow: usize,
 }
 
 impl Config {
@@ -26,8 +26,8 @@ impl Config {
                 std::env::var("NORM_PATH")
                     .unwrap_or_else(|_| "resources/normalization.json".to_string()),
             ),
-            nprobe: std::env::var("IVF_NPROBE")
-                .unwrap_or_else(|_| "8".to_string())
+            nprobe_slow: std::env::var("IVF_NPROBE")
+                .unwrap_or_else(|_| "24".to_string())
                 .parse()
                 .expect("IVF_NPROBE must be a valid integer"),
         }
