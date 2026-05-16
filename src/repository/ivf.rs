@@ -9,13 +9,15 @@ thread_local! {
 
 pub struct IvfIndex {
     k: usize,
-    nprobe: usize,
+    #[allow(dead_code)]
+    nprobe_fast: usize,
+    pub(crate) nprobe_slow: usize,
     centroids: Vec<[f32; 14]>,
     lists: Vec<Vec<([f16; 16], u8)>>,
 }
 
 impl IvfIndex {
-    pub fn load(path: &Path, nprobe: usize) -> std::io::Result<Self> {
+    pub fn load(path: &Path, nprobe_slow: usize) -> std::io::Result<Self> {
         let data = std::fs::read(path)?;
         if data.len() < 8 {
             return Err(std::io::Error::new(
@@ -93,14 +95,15 @@ impl IvfIndex {
 
         Ok(Self {
             k,
-            nprobe,
+            nprobe_fast: 5,
+            nprobe_slow,
             centroids,
             lists,
         })
     }
 
-    pub fn knn(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
-        let nprobe = self.nprobe.min(self.k);
+    pub fn knn(&self, query: &[f32; 14], k: usize, nprobe: usize) -> SmallVec<[u8; 5]> {
+        let nprobe = nprobe.min(self.k);
 
         // Pad query to 16 dims (last 2 = 0.0) for SIMD path
         let mut q16 = [0.0f32; 16];
@@ -257,7 +260,7 @@ mod tests {
         let path = write_tiny_ivf("test_ivf_legit.bin");
         let idx = IvfIndex::load(&path, 1).unwrap();
         let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3);
+        let labels = idx.knn(&query, 3, 1);
         assert_eq!(labels.len(), 3);
         assert!(
             labels.iter().all(|&l| l == 0),
@@ -271,7 +274,7 @@ mod tests {
         let path = write_tiny_ivf("test_ivf_fraud.bin");
         let idx = IvfIndex::load(&path, 1).unwrap();
         let query = [10.0f32; 14];
-        let labels = idx.knn(&query, 3);
+        let labels = idx.knn(&query, 3, 1);
         assert_eq!(labels.len(), 3);
         assert!(
             labels.iter().all(|&l| l == 1),
@@ -285,7 +288,7 @@ mod tests {
         let path = write_tiny_ivf("test_ivf_nprobe2.bin");
         let idx = IvfIndex::load(&path, 2).unwrap();
         let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3);
+        let labels = idx.knn(&query, 3, 2);
         assert_eq!(labels.len(), 3);
         assert!(
             labels.iter().all(|&l| l == 0),
@@ -307,7 +310,7 @@ mod tests {
         let path = write_tiny_ivf("test_ivf_clamp");
         let idx = IvfIndex::load(&path, 999).unwrap();
         let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3);
+        let labels = idx.knn(&query, 3, 999);
         assert_eq!(labels.len(), 3);
         assert!(labels.iter().all(|&l| l == 0), "top-3 should be legit");
         std::fs::remove_file(&path).ok();
@@ -318,7 +321,7 @@ mod tests {
         let path = write_tiny_ivf("test_ivf_mixed");
         let idx = IvfIndex::load(&path, 2).unwrap();
         let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 5);
+        let labels = idx.knn(&query, 5, 2);
         assert_eq!(labels.len(), 5);
         let legit_count = labels.iter().filter(|&&l| l == 0).count();
         let fraud_count = labels.iter().filter(|&&l| l == 1).count();
@@ -330,6 +333,17 @@ mod tests {
             last_legit_pos < first_fraud_pos,
             "all legit neighbors should rank before fraud neighbors"
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_knn_explicit_nprobe_param() {
+        let path = write_tiny_ivf("test_ivf_explicit_nprobe.bin");
+        let idx = IvfIndex::load(&path, 24).unwrap();
+        let query = [0.0f32; 14];
+        let labels = idx.knn(&query, 3, 1);
+        assert_eq!(labels.len(), 3);
+        assert!(labels.iter().all(|&l| l == 0));
         std::fs::remove_file(&path).ok();
     }
 }

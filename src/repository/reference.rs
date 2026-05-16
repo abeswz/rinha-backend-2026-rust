@@ -13,6 +13,6 @@ impl ReferenceRepository {
     }
 
     pub fn knn(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
-        self.ivf.knn(query, k)
+        self.ivf.knn(query, k, self.ivf.nprobe_slow)
     }
 }
