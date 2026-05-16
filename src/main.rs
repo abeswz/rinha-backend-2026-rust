@@ -2,8 +2,7 @@ use fraud_detection::{config::Config, web::router::build_router, AppState};
 use std::sync::Arc;
 use tracing_subscriber::{fmt, EnvFilter};
 
-#[tokio::main]
-async fn main() {
+fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
     let config = Config::from_env();
@@ -12,6 +11,13 @@ async fn main() {
     let router = build_router(state);
 
     tracing::info!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, router).await.unwrap();
+
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+            axum::serve(listener, router).await.unwrap();
+        });
 }
