@@ -16,8 +16,7 @@ down:
 	docker compose --compatibility down
 
 bench: down
-	docker compose build
-	docker compose --compatibility up -d
+	docker compose --compatibility up --build --force-recreate -d
 	@i=0; until curl -sf http://localhost:$(PORT)/ready > /dev/null 2>&1; do \
 		printf '.'; sleep 1; \
 		i=$$((i+1)); \
