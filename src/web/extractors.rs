@@ -58,7 +58,7 @@ mod tests {
     fn test_sonic_rejects_malformed_json() {
         #[derive(serde::Deserialize)]
         struct Simple {
-            x: u32,
+            _x: u32,
         }
         let result: Result<Simple, _> = sonic_rs::from_slice(b"not json");
         assert!(result.is_err());
