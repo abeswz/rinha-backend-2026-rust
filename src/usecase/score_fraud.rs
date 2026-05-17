@@ -49,8 +49,8 @@ mod tests {
         buf.extend_from_slice(&2u32.to_le_bytes());
 
         // labels: 2 blocks × 8 slots
-        for _ in 0..8 { buf.push(0u8); } // block 0: legit
-        for _ in 0..8 { buf.push(1u8); } // block 1: fraud
+        buf.extend_from_slice(&[0u8; 8]); // block 0: legit
+        buf.extend_from_slice(&[1u8; 8]); // block 1: fraud
 
         // blocks: 2 × 14 × 8 i16
         let legit_val: i16 = 1000; // ~0.1

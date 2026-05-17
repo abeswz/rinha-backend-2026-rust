@@ -70,12 +70,10 @@ mod tests {
             nprobe_slow: 24,
         };
         // Only run if resources exist and are in IVF2 format
-        let is_ivf2 = config.ivf_path.exists() && {
-            let magic = std::fs::read(&config.ivf_path)
+        let is_ivf2 = config.ivf_path.exists()
+            && std::fs::read(&config.ivf_path)
                 .map(|b| b.len() >= 4 && &b[..4] == b"IVF2")
                 .unwrap_or(false);
-            magic
-        };
         if is_ivf2 {
             let state = AppState::build(&config);
             assert!(

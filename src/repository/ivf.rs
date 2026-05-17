@@ -24,6 +24,7 @@ thread_local! {
     });
 }
 
+#[allow(clippy::needless_range_loop)]
 fn centroid_dists_scalar(query: &[f32; 14], centroids: &[f32], k: usize, dists: &mut Vec<f32>) {
     dists.clear();
     dists.resize(k, 0.0);
@@ -71,6 +72,7 @@ unsafe fn centroid_dists_simd(query: &[f32; 14], centroids: &[f32], k: usize, di
     }
 
     // Dims 1..14: accumulate with fmadd
+    #[allow(clippy::needless_range_loop)]
     for d in 1..14usize {
         let base = d * k;
         let qd = _mm256_set1_ps(query[d]);
@@ -417,8 +419,8 @@ mod tests {
         buf.extend_from_slice(&2u32.to_le_bytes());
 
         // labels: 16 bytes (2 blocks × 8 slots)
-        for _ in 0..8 { buf.push(0u8); } // block 0: legit
-        for _ in 0..8 { buf.push(1u8); } // block 1: fraud
+        buf.extend_from_slice(&[0u8; 8]); // block 0: legit
+        buf.extend_from_slice(&[1u8; 8]); // block 1: fraud
 
         // blocks: 2 × 14 × 8 i16
         let legit_val: i16 = 1000;  // round(0.1 * 10000)
@@ -454,19 +456,19 @@ mod tests {
         }
 
         // C0: all legit
-        for _ in 0..8 { buf.push(0u8); }
+        buf.extend_from_slice(&[0u8; 8]);
         // C1: all legit
-        for _ in 0..8 { buf.push(0u8); }
+        buf.extend_from_slice(&[0u8; 8]);
         // C2: slot 0 = fraud, slots 1-7 = legit
         buf.push(1u8);
-        for _ in 0..7 { buf.push(0u8); }
+        buf.extend_from_slice(&[0u8; 7]);
         // C3: slot 0 = fraud, slots 1-7 = legit
         buf.push(1u8);
-        for _ in 0..7 { buf.push(0u8); }
+        buf.extend_from_slice(&[0u8; 7]);
         // C4: all legit
-        for _ in 0..8 { buf.push(0u8); }
+        buf.extend_from_slice(&[0u8; 8]);
         // C5: all fraud
-        for _ in 0..8 { buf.push(1u8); }
+        buf.extend_from_slice(&[1u8; 8]);
 
         // blocks: 6 × 112 i16
         // C0 block: all dim=0.1 → i16=1000
@@ -533,7 +535,7 @@ mod tests {
     #[test]
     fn test_ivf2_load_rejects_truncated_file() {
         let path = std::env::temp_dir().join("ivf2_truncated.bin");
-        std::fs::write(&path, &[0u8; 10]).unwrap();
+        std::fs::write(&path, [0u8; 10]).unwrap();
         assert!(IvfIndex::load(&path, 5, 24).is_err());
         std::fs::remove_file(&path).ok();
     }

@@ -35,15 +35,15 @@ fn make_test_ivf2() -> std::path::PathBuf {
     buf.extend_from_slice(&2u32.to_le_bytes());
 
     // labels: 2 blocks × 8 slots
-    for _ in 0..8 { buf.push(0u8); } // block 0: legit
-    for _ in 0..8 { buf.push(1u8); } // block 1: fraud
+    buf.extend_from_slice(&[0u8; 8]); // block 0: legit
+    buf.extend_from_slice(&[1u8; 8]); // block 1: fraud
 
     // blocks: 2 × 14 × 8 i16, layout: for each dim, 8 slots
-    for d in 0..14 {
-        for _ in 0..8 { buf.extend_from_slice(&legit_i16[d].to_le_bytes()); }
+    for val in legit_i16 {
+        for _ in 0..8 { buf.extend_from_slice(&val.to_le_bytes()); }
     }
-    for d in 0..14 {
-        for _ in 0..8 { buf.extend_from_slice(&fraud_i16[d].to_le_bytes()); }
+    for val in fraud_i16 {
+        for _ in 0..8 { buf.extend_from_slice(&val.to_le_bytes()); }
     }
 
     let path = std::env::temp_dir().join("regression_test_ivf2.bin");
