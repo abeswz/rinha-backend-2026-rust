@@ -7,7 +7,7 @@ use tokio::net::UnixListener;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() {
     fraud::data::init();
     fraud::knn::warmup();
