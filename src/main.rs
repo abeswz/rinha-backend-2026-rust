@@ -8,9 +8,9 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 // Under 0.475 CPU cgroup (competition constraint): more threads = cgroup throttling = reactor starvation.
 // These constants caused p99=2001ms + 1986 HTTP errors when WORKER=4 + unbounded blocking pool.
 // Under 0.475 CPU cgroup per instance: WORKER=4 + unbounded blocking caused p99=2001ms + 1986 HTTP errors.
-// Little's Law at peak: ~450 req/s × 5ms KNN ≈ 2.25 concurrent → 2 blocking threads is the right bound.
+// KNN runs inline on async workers (no spawn_blocking). Only startup I/O (AppState::build) uses blocking threads.
 const TOKIO_WORKER_THREADS: usize = 2;
-const TOKIO_MAX_BLOCKING_THREADS: usize = 2;
+const TOKIO_MAX_BLOCKING_THREADS: usize = 1;
 
 fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
@@ -62,8 +62,8 @@ mod tests {
         // WORKER=4 + unbounded blocking → p99=2001ms + 1986 HTTP errors in competition.
         assert_eq!(TOKIO_WORKER_THREADS, 2, "worker_threads must be 2 on 0.475 CPU cgroup");
         assert_eq!(
-            TOKIO_MAX_BLOCKING_THREADS, 2,
-            "max_blocking_threads must be 2: unbounded blocking pool starves Tokio reactor under cgroup throttling"
+            TOKIO_MAX_BLOCKING_THREADS, 1,
+            "max_blocking_threads must be 1: KNN runs inline, only startup I/O needs a blocking thread"
         );
     }
 }
