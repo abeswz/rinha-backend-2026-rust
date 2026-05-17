@@ -142,3 +142,8 @@ test/result.json
 
 .claude/worktrees/
 .claude/plugins/
+docs/superpowers/
+docs/reqs/
+docs/worktrees/
+data-generator/
+memory/

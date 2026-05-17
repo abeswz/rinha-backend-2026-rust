@@ -1,8 +1,8 @@
-use memchr::memmem;
-use monoio::io::{AsyncReadRent, AsyncReadRentExt, AsyncWriteRentExt};
-use monoio::net::UnixStream;
 use crate::fraud::{data, json, knn, vector};
 use crate::net::response::{http_body_for, RESP_BAD_REQ, RESP_NOT_FOUND, RESP_READY};
+use memchr::memmem;
+use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
+use monoio::net::UnixStream;
 
 const RX_CAP: usize = 8192;
 
@@ -26,11 +26,13 @@ pub fn parse_content_length(header_bytes: &[u8]) -> Option<usize> {
         let line = &header_bytes[i..line_end];
         if line.len() > 15 && line[..15].eq_ignore_ascii_case(b"content-length:") {
             let val = &line[15..];
-            // trim leading spaces
             let start = val.iter().position(|&c| c != b' ').unwrap_or(val.len());
             let val = &val[start..];
-            // trim trailing whitespace/CR
-            let end = val.iter().rposition(|&c| c != b' ' && c != b'\r').map(|i| i + 1).unwrap_or(val.len());
+            let end = val
+                .iter()
+                .rposition(|&c| c != b' ' && c != b'\r')
+                .map(|i| i + 1)
+                .unwrap_or(val.len());
             let val = &val[..end];
             return std::str::from_utf8(val).ok()?.trim().parse().ok();
         }
@@ -66,7 +68,6 @@ pub async fn serve_connection(mut stream: UnixStream) {
             }
         }
 
-        // Process all complete requests
         let mut consumed = 0usize;
         loop {
             let available = &rx_buf[consumed..];
@@ -121,7 +122,6 @@ pub async fn serve_connection(mut stream: UnixStream) {
             }
         }
 
-        // Flush responses
         if !tx_buf.is_empty() {
             let out = std::mem::take(&mut tx_buf);
             let (res, mut out) = stream.write_all(out).await;
@@ -132,7 +132,6 @@ pub async fn serve_connection(mut stream: UnixStream) {
             }
         }
 
-        // Compact rx_buf
         if consumed > 0 {
             if consumed < rx_buf.len() {
                 let remaining = rx_buf.len() - consumed;
@@ -171,7 +170,10 @@ mod tests {
 
     #[test]
     fn route_detection() {
-        assert_eq!(detect_route(b"POST /fraud-score HTTP/1.1"), Route::FraudScore);
+        assert_eq!(
+            detect_route(b"POST /fraud-score HTTP/1.1"),
+            Route::FraudScore
+        );
         assert_eq!(detect_route(b"GET /ready HTTP/1.1"), Route::Ready);
         assert_eq!(detect_route(b"GET /unknown HTTP/1.1"), Route::NotFound);
     }
