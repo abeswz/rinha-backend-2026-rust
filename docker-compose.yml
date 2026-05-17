@@ -30,8 +30,6 @@ services:
       - sock:/run/sock
     networks:
       - fraud-net
-    security_opt:
-      - seccomp:unconfined
     ulimits:
       nofile:
         soft: 65535
@@ -50,8 +48,6 @@ services:
       - sock:/run/sock
     networks:
       - fraud-net
-    security_opt:
-      - seccomp:unconfined
     ulimits:
       nofile:
         soft: 65535
