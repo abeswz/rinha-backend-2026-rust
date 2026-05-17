@@ -13,7 +13,7 @@ pub static RESP_BAD_REQ: &[u8] = b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0
 
 #[inline(always)]
 pub fn http_body_for(fraud_count: u8) -> &'static [u8] {
-    FRAUD_RESPONSES[fraud_count as usize]
+    FRAUD_RESPONSES[(fraud_count as usize).min(5)]
 }
 
 #[cfg(test)]
