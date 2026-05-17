@@ -156,6 +156,135 @@ fn block_scan_scalar(
     top.iter().map(|&(_, label)| label).collect()
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn block_scan_simd(
+    query: &[f32; 14],
+    offsets: &[u32],
+    labels: &[u8],
+    blocks: &[i16],
+    probed: &[usize],
+    k: usize,
+) -> SmallVec<[u8; 5]> {
+    use std::arch::x86_64::*;
+
+    let scale = _mm256_set1_ps(0.0001);
+    let mut q_vecs = [_mm256_setzero_ps(); 14];
+    for d in 0..14usize {
+        q_vecs[d] = _mm256_set1_ps(query[d]);
+    }
+
+    let mut top: SmallVec<[(u32, u8); 6]> = SmallVec::new();
+    let mut worst_dist_bits: u32 = f32::INFINITY.to_bits();
+
+    macro_rules! load_and_widen {
+        ($ptr:expr) => {{
+            let raw = _mm_loadu_si128($ptr as *const __m128i);
+            let i32s = _mm256_cvtepi16_epi32(raw);
+            _mm256_mul_ps(_mm256_cvtepi32_ps(i32s), scale)
+        }};
+    }
+
+    let bp = blocks.as_ptr();
+    let lp = labels.as_ptr();
+
+    for &ci in probed {
+        let block_start = offsets[ci] as usize;
+        let block_end = offsets[ci + 1] as usize;
+
+        'block: for block_i in block_start..block_end {
+            if block_i + 4 < block_end {
+                _mm_prefetch(bp.add((block_i + 4) * 112) as *const i8, _MM_HINT_T0);
+            }
+
+            let bb = block_i * 112;
+            let threshold = _mm256_set1_ps(f32::from_bits(worst_dist_bits));
+
+            // First 8 dims (4 pairs) — early termination check
+            let mut acc0 = _mm256_setzero_ps();
+            let mut acc1 = _mm256_setzero_ps();
+
+            macro_rules! dim_pair {
+                ($d:expr) => {{
+                    let v0 = load_and_widen!(bp.add(bb + $d * 8));
+                    let v1 = load_and_widen!(bp.add(bb + ($d + 1) * 8));
+                    let dv0 = _mm256_sub_ps(v0, q_vecs[$d]);
+                    let dv1 = _mm256_sub_ps(v1, q_vecs[$d + 1]);
+                    acc0 = _mm256_fmadd_ps(dv0, dv0, acc0);
+                    acc1 = _mm256_fmadd_ps(dv1, dv1, acc1);
+                }};
+            }
+
+            dim_pair!(0);
+            dim_pair!(2);
+            dim_pair!(4);
+            dim_pair!(6);
+
+            // Early termination: if all 8 partial distances exceed threshold, skip
+            let partial = _mm256_add_ps(acc0, acc1);
+            if _mm256_movemask_ps(_mm256_cmp_ps(partial, threshold, _CMP_LT_OQ)) == 0 {
+                continue 'block;
+            }
+
+            // Remaining 6 dims (3 pairs)
+            dim_pair!(8);
+            dim_pair!(10);
+            dim_pair!(12);
+
+            let full = _mm256_add_ps(acc0, acc1);
+            let mut mask =
+                _mm256_movemask_ps(_mm256_cmp_ps(full, threshold, _CMP_LT_OQ)) as u32;
+            if mask == 0 {
+                continue;
+            }
+
+            let mut dists_buf = [0.0f32; 8];
+            _mm256_storeu_ps(dists_buf.as_mut_ptr(), full);
+            let label_base = block_i * 8;
+
+            while mask != 0 {
+                let slot = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let dist = dists_buf[slot];
+                let dist_bits = dist.to_bits();
+                let label = *lp.add(label_base + slot);
+
+                if top.len() < k {
+                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                    top.insert(pos, (dist_bits, label));
+                    if top.len() == k {
+                        worst_dist_bits = top[k - 1].0;
+                    }
+                } else if dist_bits < worst_dist_bits {
+                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                    top.insert(pos, (dist_bits, label));
+                    top.truncate(k);
+                    worst_dist_bits = top[k - 1].0;
+                }
+            }
+        }
+    }
+
+    top.iter().map(|&(_, label)| label).collect()
+}
+
+fn run_block_scan(
+    query: &[f32; 14],
+    offsets: &[u32],
+    labels: &[u8],
+    blocks: &[i16],
+    probed: &[usize],
+    k: usize,
+) -> SmallVec<[u8; 5]> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { block_scan_simd(query, offsets, labels, blocks, probed, k) };
+        }
+    }
+    block_scan_scalar(query, offsets, labels, blocks, probed, k)
+}
+
 impl IvfIndex {
     pub fn load(path: &Path, nprobe_fast: usize, nprobe_slow: usize) -> std::io::Result<Self> {
         let data = std::fs::read(path)?;
@@ -244,7 +373,7 @@ impl IvfIndex {
                 });
             }
 
-            block_scan_scalar(
+            run_block_scan(
                 query,
                 &self.offsets,
                 &self.labels,
@@ -497,6 +626,23 @@ mod tests {
         assert!(
             scalar_labels.iter().all(|&l| l == 0),
             "SIMD centroid scan must route to legit cluster"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_early_termination_skips_distant_block() {
+        // Fixture: k=2, 8 legit near [0.0;14], 8 fraud near [2.0;14]
+        // Query [0.0;14] with nprobe=2: after block 0 (legit, dist≈0.14) fills heap,
+        // block 1 (fraud, dist≈56.0) should be skipped by early termination.
+        let path = write_ivf2("ivf2_early_term.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
+        let query = [0.0f32; 14];
+        let labels = idx.knn(&query, 5, 2);
+        assert_eq!(labels.len(), 5);
+        assert!(
+            labels.iter().all(|&l| l == 0),
+            "early termination must skip far block; got labels: {:?}", labels
         );
         std::fs::remove_file(&path).ok();
     }
