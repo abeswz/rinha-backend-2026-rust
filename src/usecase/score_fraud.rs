@@ -16,6 +16,7 @@ impl ScoreFraudUseCase {
         FraudDecision {
             approved: fraud_score < 0.6,
             fraud_score,
+            fraud_count,
         }
     }
 }
@@ -80,6 +81,20 @@ mod tests {
             },
             last_transaction: None,
         }
+    }
+
+    #[test]
+    fn test_execute_sets_fraud_count() {
+        let repo = make_repo();
+        let norm = NormalizationConstants::default();
+        let mcc_risk = MccRiskMap::default();
+        let use_case = ScoreFraudUseCase {
+            vectorizer: Vectorizer::new(norm, mcc_risk),
+            repository: repo,
+        };
+        let tx = make_tx(100.0);
+        let decision = use_case.execute(&tx);
+        assert!(decision.fraud_count <= 5, "fraud_count must be 0..=5");
     }
 
     #[test]

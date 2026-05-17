@@ -28,6 +28,7 @@ pub async fn fraud_score_handler(
     .unwrap_or(FraudDecision {
         approved: true,
         fraud_score: 0.0,
+        fraud_count: 0,
     });
     Json(FraudScoreResponse {
         approved: decision.approved,
@@ -77,13 +78,13 @@ mod tests {
             Duration::from_millis(50),
             tokio::task::spawn_blocking(|| {
                 std::thread::sleep(Duration::from_millis(500));
-                FraudDecision { approved: false, fraud_score: 1.0 }
+                FraudDecision { approved: false, fraud_score: 1.0, fraud_count: 5 }
             }),
         )
         .await
         .ok()
         .and_then(|r| r.ok())
-        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0 });
+        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0, fraud_count: 0 });
 
         assert!(result.approved, "timeout fallback must be approved=true");
         assert_eq!(result.fraud_score, 0.0);
@@ -93,12 +94,12 @@ mod tests {
     async fn test_fast_execution_returns_actual_decision() {
         let result = tokio::time::timeout(
             Duration::from_millis(1600),
-            tokio::task::spawn_blocking(|| FraudDecision { approved: false, fraud_score: 0.8 }),
+            tokio::task::spawn_blocking(|| FraudDecision { approved: false, fraud_score: 0.8, fraud_count: 4 }),
         )
         .await
         .ok()
         .and_then(|r| r.ok())
-        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0 });
+        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0, fraud_count: 0 });
 
         assert!(!result.approved, "fast execution must return actual result, not fallback");
         assert_eq!(result.fraud_score, 0.8);
