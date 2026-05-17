@@ -6,33 +6,22 @@ API de detecção de fraude em tempo real construída em Rust. Recebe uma transa
 
 ## Arquitetura
 
-```
-                  ┌─────────────────────────────────────────────┐
-                  │              Docker Compose                  │
-                  │                                             │
-  Client ─────►  │  nginx:9999 ──least_conn──► api1:3000       │
-                  │               │             api2:3000       │
-                  │               └─────────────────┘           │
-                  │                      │                       │
-                  │              spawn_blocking                  │
-                  │                      │                       │
-                  │              ┌───────▼──────────┐            │
-                  │              │  knn_adaptive    │            │
-                  │              │  Stage 1 (fast)  │            │
-                  │              │  nprobe = 5      │            │
-                  │              └───────┬──────────┘            │
-                  │                      │                       │
-                  │              ambiguous vote?                  │
-                  │               /          \                   │
-                  │             no            yes                │
-                  │              │             │                  │
-                  │           return    ┌──────▼──────────┐      │
-                  │                    │  Stage 2 (slow)  │      │
-                  │                    │  nprobe = 24     │      │
-                  │                    └──────┬───────────┘      │
-                  │                           │                   │
-                  │                        return                 │
-                  └─────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    Client -->|HTTP| nginx["nginx : 9999\nleast_conn"]
+
+    nginx --> api1["api1 : 3000"]
+    nginx --> api2["api2 : 3000"]
+
+    api1 & api2 --> sb(["spawn_blocking"])
+
+    sb --> s1["knn_adaptive — Stage 1\nnprobe = 5"]
+
+    s1 -->|"votos ≤ 1\nlegítimo claro"| ret1(["return ✓"])
+    s1 -->|"votos ≥ 4\nfraude clara"| ret2(["return ✗"])
+    s1 -->|"votos 2–3\nambíguo"| s2["Stage 2\nnprobe = 24"]
+
+    s2 --> ret3(["return"])
 ```
 
 ---
@@ -96,9 +85,9 @@ A maioria das requisições retorna no estágio rápido (nprobe=5 ≈ 0,3% dos c
 
 ### Índice IVF
 
-Os 3 milhões de vetores são agrupados em **K=1732 clusters** via MiniBatchKMeans. Armazenado em `resources/ivf_index.bin` como `f16` (~90MB em RAM). O índice é carregado inteiro no startup — nenhuma I/O por requisição.
+Os 3 milhões de vetores são agrupados em **K=4096 clusters** via MiniBatchKMeans. Armazenado em `resources/ivf_index.bin` em formato IVF2 com quantização `i16` (×10000, ~84MB). O índice é carregado inteiro no startup — nenhuma I/O por requisição.
 
-A busca usa SIMD (AVX2 + F16C) para conversão f16→f32 e cálculo de distância, e `select_nth_unstable` (O(K) vs O(K log K)) para selecionar os clusters mais próximos.
+Layout flat column-major: centroides f32 coluna-major, blocos de 8 vetores i16 com layout dim-major. A busca usa SIMD (AVX2+FMA) para scan de centroides e blocos, com terminação antecipada após 8 de 14 dimensões quando o heap já está cheio. Seleção de clusters via `select_nth_unstable` (O(K) vs O(K log K)).
 
 ### Runtime
 
@@ -131,9 +120,9 @@ src/
     handlers.rs       # Axum handlers (spawn_blocking)
     router.rs         # GET /ready, POST /fraud-score
 tools/
-  build_ivf.py        # Gera ivf_index.bin (MiniBatchKMeans K=1732)
+  build_ivf.py        # Gera ivf_index.bin (MiniBatchKMeans K=4096, IVF2 i16)
 resources/
-  ivf_index.bin       # Índice IVF f16 (~90MB) — gerado, não versionado
+  ivf_index.bin       # Índice IVF2 i16 K=4096 (~84MB) — gerado, não versionado
   mcc_risk.json       # Risco por MCC
   normalization.json  # Constantes de normalização
 ```
