@@ -90,7 +90,7 @@ mod tests {
     fn test_static_bodies_all_valid_json() {
         for (i, body) in STATIC_BODIES.iter().enumerate() {
             let v: serde_json::Value = serde_json::from_str(body)
-                .expect(&format!("body[{i}] is not valid JSON: {body}"));
+                .unwrap_or_else(|_| panic!("body[{i}] is not valid JSON: {body}"));
             assert!(v.get("approved").is_some(), "body[{i}] missing 'approved'");
             assert!(v.get("fraud_score").is_some(), "body[{i}] missing 'fraud_score'");
         }
