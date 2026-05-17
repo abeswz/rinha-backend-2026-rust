@@ -110,8 +110,11 @@ match res {
 
 // after (tokio readiness model)
 use tokio::io::AsyncReadExt;
-let n = stream.read_buf(&mut rx_buf).await?;
-if n == 0 { break; }
+let n = match stream.read_buf(&mut rx_buf).await {
+    Ok(0) | Err(_) => break,
+    Ok(n) => n,
+};
+let _ = n; // consumed via rx_buf length growth
 ```
 
 ### Write (`net/http.rs`)
@@ -124,9 +127,9 @@ out.clear();
 tx_buf = out;
 if res.is_err() { break; }
 
-// after
-use tokio::io::AsyncWriteExt;
-stream.write_all(&tx_buf).await?;
+// after — keep same break-on-error pattern, no ? operator
+// (serve_connection return type stays () to match tokio::spawn signature)
+if stream.write_all(&tx_buf).await.is_err() { break; }
 tx_buf.clear();
 ```
 
