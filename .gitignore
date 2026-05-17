@@ -133,3 +133,5 @@ tools/__pycache__/
 tools/.venv/
 
 memory/
+
+test/result.json
