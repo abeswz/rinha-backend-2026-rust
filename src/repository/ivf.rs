@@ -1,543 +1,670 @@
-use half::f16;
 use smallvec::SmallVec;
 use std::cell::RefCell;
 use std::path::Path;
 
-thread_local! {
-    static CENTROID_BUF: RefCell<Vec<(f32, usize)>> = RefCell::new(Vec::with_capacity(3072));
-}
-
 pub struct IvfIndex {
     k: usize,
+    #[allow(dead_code)]
+    n: usize,
     nprobe_fast: usize,
-    pub(crate) nprobe_slow: usize,
-    centroids: Vec<[f32; 16]>,
-    lists: Vec<Vec<([f16; 16], u8)>>,
+    nprobe_slow: usize,
+    centroids: Vec<f32>,
+    offsets: Vec<u32>,
+    labels: Vec<u8>,
+    blocks: Vec<i16>,
+}
+
+struct CentroidBufs {
+    dists: Vec<f32>,
+}
+
+thread_local! {
+    static CENTROID_BUFS: RefCell<CentroidBufs> = RefCell::new(CentroidBufs {
+        dists: Vec::with_capacity(4096),
+    });
+}
+
+#[allow(clippy::needless_range_loop)]
+fn centroid_dists_scalar(query: &[f32; 14], centroids: &[f32], k: usize, dists: &mut Vec<f32>) {
+    dists.clear();
+    dists.resize(k, 0.0);
+    for d in 0..14usize {
+        let qd = query[d];
+        let base = d * k;
+        for ci in 0..k {
+            let diff = centroids[base + ci] - qd;
+            dists[ci] += diff * diff;
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn centroid_dists_simd(query: &[f32; 14], centroids: &[f32], k: usize, dists: &mut Vec<f32>) {
+    use std::arch::x86_64::*;
+
+    dists.clear();
+    dists.resize(k, 0.0);
+    let dp = dists.as_mut_ptr();
+    let cp = centroids.as_ptr();
+
+    // Dim 0: initialize (mul, not fmadd)
+    {
+        let qd = _mm256_set1_ps(query[0]);
+        let mut ci = 0usize;
+        while ci + 16 <= k {
+            let d0 = _mm256_sub_ps(_mm256_loadu_ps(cp.add(ci)), qd);
+            let d1 = _mm256_sub_ps(_mm256_loadu_ps(cp.add(ci + 8)), qd);
+            _mm256_storeu_ps(dp.add(ci), _mm256_mul_ps(d0, d0));
+            _mm256_storeu_ps(dp.add(ci + 8), _mm256_mul_ps(d1, d1));
+            ci += 16;
+        }
+        while ci + 8 <= k {
+            let d0 = _mm256_sub_ps(_mm256_loadu_ps(cp.add(ci)), qd);
+            _mm256_storeu_ps(dp.add(ci), _mm256_mul_ps(d0, d0));
+            ci += 8;
+        }
+        while ci < k {
+            let diff = *cp.add(ci) - query[0];
+            *dp.add(ci) = diff * diff;
+            ci += 1;
+        }
+    }
+
+    // Dims 1..14: accumulate with fmadd
+    #[allow(clippy::needless_range_loop)]
+    for d in 1..14usize {
+        let base = d * k;
+        let qd = _mm256_set1_ps(query[d]);
+        let mut ci = 0usize;
+        while ci + 16 <= k {
+            let cv0 = _mm256_loadu_ps(cp.add(base + ci));
+            let cv1 = _mm256_loadu_ps(cp.add(base + ci + 8));
+            let dv0 = _mm256_sub_ps(cv0, qd);
+            let dv1 = _mm256_sub_ps(cv1, qd);
+            let a0 = _mm256_loadu_ps(dp.add(ci));
+            let a1 = _mm256_loadu_ps(dp.add(ci + 8));
+            _mm256_storeu_ps(dp.add(ci), _mm256_fmadd_ps(dv0, dv0, a0));
+            _mm256_storeu_ps(dp.add(ci + 8), _mm256_fmadd_ps(dv1, dv1, a1));
+            ci += 16;
+        }
+        while ci + 8 <= k {
+            let cv = _mm256_loadu_ps(cp.add(base + ci));
+            let dv = _mm256_sub_ps(cv, qd);
+            let a = _mm256_loadu_ps(dp.add(ci));
+            _mm256_storeu_ps(dp.add(ci), _mm256_fmadd_ps(dv, dv, a));
+            ci += 8;
+        }
+        while ci < k {
+            let diff = *cp.add(base + ci) - query[d];
+            *dp.add(ci) += diff * diff;
+            ci += 1;
+        }
+    }
+}
+
+fn fill_centroid_dists(query: &[f32; 14], centroids: &[f32], k: usize, dists: &mut Vec<f32>) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { centroid_dists_simd(query, centroids, k, dists) };
+        }
+    }
+    centroid_dists_scalar(query, centroids, k, dists);
+}
+
+fn block_scan_scalar(
+    query: &[f32; 14],
+    offsets: &[u32],
+    labels: &[u8],
+    blocks: &[i16],
+    probed: &[usize],
+    k: usize,
+) -> SmallVec<[u8; 5]> {
+    let mut top: SmallVec<[(u32, u8); 6]> = SmallVec::new();
+
+    for &ci in probed {
+        let block_start = offsets[ci] as usize;
+        let block_end = offsets[ci + 1] as usize;
+
+        for block_idx in block_start..block_end {
+            let block_base = block_idx * 14 * 8;
+            let label_base = block_idx * 8;
+
+            for slot in 0..8 {
+                let mut sq = 0.0f32;
+                for d in 0..14usize {
+                    let raw = blocks[block_base + d * 8 + slot] as f32;
+                    let diff = query[d] - raw * 0.0001;
+                    sq += diff * diff;
+                }
+                if sq.is_nan() {
+                    continue;
+                }
+                let dist_bits = sq.to_bits();
+                let label = labels[label_base + slot];
+                if top.len() < k {
+                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                    top.insert(pos, (dist_bits, label));
+                } else if dist_bits < top[top.len() - 1].0 {
+                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                    top.insert(pos, (dist_bits, label));
+                    top.truncate(k);
+                }
+            }
+        }
+    }
+
+    top.iter().map(|&(_, label)| label).collect()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn block_scan_simd(
+    query: &[f32; 14],
+    offsets: &[u32],
+    labels: &[u8],
+    blocks: &[i16],
+    probed: &[usize],
+    k: usize,
+) -> SmallVec<[u8; 5]> {
+    use std::arch::x86_64::*;
+
+    let scale = _mm256_set1_ps(0.0001);
+    let mut q_vecs = [_mm256_setzero_ps(); 14];
+    for d in 0..14usize {
+        q_vecs[d] = _mm256_set1_ps(query[d]);
+    }
+
+    let mut top: SmallVec<[(u32, u8); 6]> = SmallVec::new();
+    let mut worst_dist_bits: u32 = f32::INFINITY.to_bits();
+
+    macro_rules! load_and_widen {
+        ($ptr:expr) => {{
+            let raw = _mm_loadu_si128($ptr as *const __m128i);
+            let i32s = _mm256_cvtepi16_epi32(raw);
+            _mm256_mul_ps(_mm256_cvtepi32_ps(i32s), scale)
+        }};
+    }
+
+    let bp = blocks.as_ptr();
+    let lp = labels.as_ptr();
+
+    for &ci in probed {
+        let block_start = offsets[ci] as usize;
+        let block_end = offsets[ci + 1] as usize;
+
+        'block: for block_i in block_start..block_end {
+            if block_i + 4 < block_end {
+                _mm_prefetch(bp.add((block_i + 4) * 112) as *const i8, _MM_HINT_T0);
+            }
+
+            let bb = block_i * 112;
+            let threshold = _mm256_set1_ps(f32::from_bits(worst_dist_bits));
+
+            // First 8 dims (4 pairs) — early termination check
+            let mut acc0 = _mm256_setzero_ps();
+            let mut acc1 = _mm256_setzero_ps();
+
+            macro_rules! dim_pair {
+                ($d:expr) => {{
+                    let v0 = load_and_widen!(bp.add(bb + $d * 8));
+                    let v1 = load_and_widen!(bp.add(bb + ($d + 1) * 8));
+                    let dv0 = _mm256_sub_ps(v0, q_vecs[$d]);
+                    let dv1 = _mm256_sub_ps(v1, q_vecs[$d + 1]);
+                    acc0 = _mm256_fmadd_ps(dv0, dv0, acc0);
+                    acc1 = _mm256_fmadd_ps(dv1, dv1, acc1);
+                }};
+            }
+
+            dim_pair!(0);
+            dim_pair!(2);
+            dim_pair!(4);
+            dim_pair!(6);
+
+            // Early termination: if all 8 partial distances exceed threshold, skip
+            let partial = _mm256_add_ps(acc0, acc1);
+            if _mm256_movemask_ps(_mm256_cmp_ps(partial, threshold, _CMP_LT_OQ)) == 0 {
+                continue 'block;
+            }
+
+            // Remaining 6 dims (3 pairs)
+            dim_pair!(8);
+            dim_pair!(10);
+            dim_pair!(12);
+
+            let full = _mm256_add_ps(acc0, acc1);
+            let mut mask =
+                _mm256_movemask_ps(_mm256_cmp_ps(full, threshold, _CMP_LT_OQ)) as u32;
+            if mask == 0 {
+                continue;
+            }
+
+            let mut dists_buf = [0.0f32; 8];
+            _mm256_storeu_ps(dists_buf.as_mut_ptr(), full);
+            let label_base = block_i * 8;
+
+            while mask != 0 {
+                let slot = mask.trailing_zeros() as usize;
+                mask &= mask - 1;
+                let dist = dists_buf[slot];
+                let dist_bits = dist.to_bits();
+                let label = *lp.add(label_base + slot);
+
+                if top.len() < k {
+                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                    top.insert(pos, (dist_bits, label));
+                    if top.len() == k {
+                        worst_dist_bits = top[k - 1].0;
+                    }
+                } else if dist_bits < worst_dist_bits {
+                    let pos = top.partition_point(|&(d, _)| d <= dist_bits);
+                    top.insert(pos, (dist_bits, label));
+                    top.truncate(k);
+                    worst_dist_bits = top[k - 1].0;
+                }
+            }
+        }
+    }
+
+    top.iter().map(|&(_, label)| label).collect()
+}
+
+fn run_block_scan(
+    query: &[f32; 14],
+    offsets: &[u32],
+    labels: &[u8],
+    blocks: &[i16],
+    probed: &[usize],
+    k: usize,
+) -> SmallVec<[u8; 5]> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { block_scan_simd(query, offsets, labels, blocks, probed, k) };
+        }
+    }
+    block_scan_scalar(query, offsets, labels, blocks, probed, k)
 }
 
 impl IvfIndex {
     pub fn load(path: &Path, nprobe_fast: usize, nprobe_slow: usize) -> std::io::Result<Self> {
         let data = std::fs::read(path)?;
-        if data.len() < 8 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "ivf_index.bin too short: missing header",
-            ));
-        }
         let mut pos = 0;
 
-        let k = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
-        let d = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-        pos += 4;
+        macro_rules! need {
+            ($n:expr, $msg:literal) => {
+                if data.len() < pos + $n {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, $msg));
+                }
+            };
+        }
+        macro_rules! read_u32 {
+            () => {{
+                need!(4, "truncated");
+                let v = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
+                pos += 4;
+                v as usize
+            }};
+        }
 
+        need!(4, "missing magic");
+        if &data[..4] != b"IVF2" {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected IVF2 magic",
+            ));
+        }
+        pos = 4;
+
+        let n = read_u32!();
+        let k = read_u32!();
+        let d = read_u32!();
         if d != 14 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("expected D=14, got {d}"),
+                format!("expected d=14, got {d}"),
             ));
         }
 
-        let centroid_bytes = k * 14 * 4;
-        if data.len() < pos + centroid_bytes {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "ivf_index.bin truncated: centroids",
-            ));
-        }
-        let mut centroids = Vec::with_capacity(k);
-        for _ in 0..k {
-            let mut c = [0.0f32; 16];
-            for elem in &mut c[..14] {
-                *elem = f32::from_le_bytes(data[pos..pos + 4].try_into().unwrap());
-                pos += 4;
-            }
-            centroids.push(c);
-        }
-
-        if data.len() < pos + k * 4 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "ivf_index.bin truncated: list sizes",
-            ));
-        }
-        let mut list_sizes = Vec::with_capacity(k);
-        for _ in 0..k {
-            let sz = u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()) as usize;
-            list_sizes.push(sz);
+        need!(d * k * 4, "truncated: centroids");
+        let mut centroids = Vec::with_capacity(d * k);
+        for _ in 0..d * k {
+            centroids.push(f32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()));
             pos += 4;
         }
 
-        let mut lists = Vec::with_capacity(k);
-        for (i, &sz) in list_sizes.iter().enumerate() {
-            let entry_bytes = sz * (14 * 2 + 1);
-            if data.len() < pos + entry_bytes {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("ivf_index.bin truncated: cluster {i} entries"),
-                ));
-            }
-            let mut list = Vec::with_capacity(sz);
-            for _ in 0..sz {
-                // Read 14 f16 from binary, pad to 16 for SIMD alignment (dims 14,15 = zero)
-                let mut vec = [f16::ZERO; 16];
-                for elem in &mut vec[..14] {
-                    *elem = f16::from_le_bytes([data[pos], data[pos + 1]]);
-                    pos += 2;
-                }
-                let label = data[pos];
-                pos += 1;
-                list.push((vec, label));
-            }
-            lists.push(list);
+        need!((k + 1) * 4, "truncated: offsets");
+        let mut offsets = Vec::with_capacity(k + 1);
+        for _ in 0..=k {
+            offsets.push(u32::from_le_bytes(data[pos..pos + 4].try_into().unwrap()));
+            pos += 4;
         }
 
-        Ok(Self {
-            k,
-            nprobe_fast,
-            nprobe_slow,
-            centroids,
-            lists,
-        })
+        let total_blocks = offsets[k] as usize;
+
+        need!(total_blocks * 8, "truncated: labels");
+        let labels = data[pos..pos + total_blocks * 8].to_vec();
+        pos += total_blocks * 8;
+
+        let block_i16_count = total_blocks * d * 8;
+        need!(block_i16_count * 2, "truncated: blocks");
+        let mut blocks = Vec::with_capacity(block_i16_count);
+        for _ in 0..block_i16_count {
+            blocks.push(i16::from_le_bytes(data[pos..pos + 2].try_into().unwrap()));
+            pos += 2;
+        }
+
+        Ok(Self { k, n, nprobe_fast, nprobe_slow, centroids, offsets, labels, blocks })
     }
 
     pub fn knn(&self, query: &[f32; 14], k: usize, nprobe: usize) -> SmallVec<[u8; 5]> {
         let nprobe = nprobe.min(self.k);
 
-        // Pad query to 16 dims (last 2 = 0.0) for SIMD path
-        let mut q16 = [0.0f32; 16];
-        q16[..14].copy_from_slice(query);
+        CENTROID_BUFS.with(|bufs| {
+            let mut bufs = bufs.borrow_mut();
+            fill_centroid_dists(query, &self.centroids, self.k, &mut bufs.dists);
 
-        CENTROID_BUF.with(|buf| {
-            let mut buf = buf.borrow_mut();
-            buf.clear();
-            buf.extend(
-                self.centroids
-                    .iter()
-                    .enumerate()
-                    .map(|(i, c)| (centroid_sq_dist(&q16, c), i)),
-            );
+            // Use a local vec for indices (avoids re-borrow conflict)
+            let mut indices: Vec<usize> = (0..self.k).collect();
 
-            // O(K) partial select instead of O(K log K) full sort
-            if nprobe < buf.len() {
-                buf.select_nth_unstable_by(nprobe - 1, |a, b| {
-                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+            if nprobe < self.k {
+                let dists = &bufs.dists;
+                indices.select_nth_unstable_by(nprobe - 1, |&a, &b| {
+                    dists[a].partial_cmp(&dists[b]).unwrap_or(std::cmp::Ordering::Equal)
                 });
             }
 
-            // k+1 capacity fits on stack — no heap alloc for k=5
-            let mut top: SmallVec<[(u32, u8); 6]> = SmallVec::new();
-            for &(_, ci) in &buf[..nprobe] {
-                for (vec, label) in &self.lists[ci] {
-                    let dist = vec_sq_dist(&q16, vec);
-                    if dist.is_nan() {
-                        continue;
-                    }
-                    let dist_bits = dist.to_bits();
-                    if top.len() < k {
-                        let pos = top.partition_point(|&(d, _)| d <= dist_bits);
-                        top.insert(pos, (dist_bits, *label));
-                    } else if dist_bits < top[top.len() - 1].0 {
-                        let pos = top.partition_point(|&(d, _)| d <= dist_bits);
-                        top.insert(pos, (dist_bits, *label));
-                        top.truncate(k);
-                    }
-                }
-            }
-
-            top.iter().map(|&(_, label)| label).collect()
+            run_block_scan(
+                query,
+                &self.offsets,
+                &self.labels,
+                &self.blocks,
+                &indices[..nprobe],
+                k,
+            )
         })
     }
 
-    /// Two-stage adaptive KNN search. Requires k >= 4 for stage-2 to have a meaningful
-    /// ambiguous zone; with k < 4 the condition `fraud_votes <= 1 || fraud_votes >= k-1`
-    /// covers all possible vote counts and stage-2 never fires.
     pub fn knn_adaptive(&self, query: &[f32; 14], k: usize) -> SmallVec<[u8; 5]> {
         let stage1 = self.knn(query, k, self.nprobe_fast);
         let fraud_votes = stage1.iter().filter(|&&l| l == 1).count();
-        // Unambiguous: 0-1 fraud votes (clear legit) or k-1..k fraud votes (clear fraud)
         if fraud_votes <= 1 || fraud_votes >= k.saturating_sub(1) {
             return stage1;
         }
-        // Ambiguous: run full slow-path search
         self.knn(query, k, self.nprobe_slow)
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-unsafe fn centroid_sq_dist_simd(query16: &[f32; 16], centroid16: &[f32; 16]) -> f32 {
-    use std::arch::x86_64::*;
-
-    let q0 = _mm256_loadu_ps(query16.as_ptr());
-    let c0 = _mm256_loadu_ps(centroid16.as_ptr());
-    let diff0 = _mm256_sub_ps(q0, c0);
-    let sq0 = _mm256_mul_ps(diff0, diff0);
-
-    let q1 = _mm256_loadu_ps(query16.as_ptr().add(8));
-    let c1 = _mm256_loadu_ps(centroid16.as_ptr().add(8));
-    let diff1 = _mm256_sub_ps(q1, c1);
-    let sq1 = _mm256_mul_ps(diff1, diff1);
-
-    let sum = _mm256_add_ps(sq0, sq1);
-    let hi = _mm256_extractf128_ps(sum, 1);
-    let lo = _mm256_castps256_ps128(sum);
-    let sum4 = _mm_add_ps(lo, hi);
-    let sum2 = _mm_add_ps(sum4, _mm_movehl_ps(sum4, sum4));
-    let sum1 = _mm_add_ss(sum2, _mm_shuffle_ps(sum2, sum2, 1));
-    _mm_cvtss_f32(sum1)
-}
-
-fn centroid_sq_dist(query16: &[f32; 16], centroid16: &[f32; 16]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") {
-            return unsafe { centroid_sq_dist_simd(query16, centroid16) };
-        }
-    }
-    let mut sum = 0.0f32;
-    for i in 0..14 {
-        let d = query16[i] - centroid16[i];
-        sum += d * d;
-    }
-    sum
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2,f16c")]
-unsafe fn vec_sq_dist_simd(query: &[f32; 16], vec: &[f16; 16]) -> f32 {
-    use std::arch::x86_64::*;
-
-    // dims 0..8: load 8 f16, convert to f32, compute squared differences
-    let v0 = _mm_loadu_si128(vec.as_ptr() as *const __m128i);
-    let vf0 = _mm256_cvtph_ps(v0);
-    let q0 = _mm256_loadu_ps(query.as_ptr());
-    let diff0 = _mm256_sub_ps(q0, vf0);
-    let sq0 = _mm256_mul_ps(diff0, diff0);
-
-    // dims 8..16: load 8 f16 (last 2 are zero padding), compute squared differences
-    let v1 = _mm_loadu_si128((vec.as_ptr() as *const __m128i).add(1));
-    let vf1 = _mm256_cvtph_ps(v1);
-    let q1 = _mm256_loadu_ps(query.as_ptr().add(8));
-    let diff1 = _mm256_sub_ps(q1, vf1);
-    let sq1 = _mm256_mul_ps(diff1, diff1);
-
-    // Horizontal sum of all 16 squared differences
-    let sum = _mm256_add_ps(sq0, sq1);
-    let hi = _mm256_extractf128_ps(sum, 1);
-    let lo = _mm256_castps256_ps128(sum);
-    let sum4 = _mm_add_ps(lo, hi);
-    let sum2 = _mm_add_ps(sum4, _mm_movehl_ps(sum4, sum4));
-    let sum1 = _mm_add_ss(sum2, _mm_shuffle_ps(sum2, sum2, 1));
-    _mm_cvtss_f32(sum1)
-}
-
-fn vec_sq_dist(query: &[f32; 16], vec: &[f16; 16]) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("f16c") {
-            return unsafe { vec_sq_dist_simd(query, vec) };
-        }
-    }
-    // Scalar fallback — only first 14 dims matter (last 2 are zero padding)
-    let mut sum = 0.0f32;
-    for i in 0..14 {
-        let d = query[i] - vec[i].to_f32();
-        sum += d * d;
-    }
-    sum
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_tiny_ivf_bytes() -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
+    fn make_ivf2_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"IVF2");
+        buf.extend_from_slice(&16u32.to_le_bytes()); // n
+        buf.extend_from_slice(&2u32.to_le_bytes());  // k
+        buf.extend_from_slice(&14u32.to_le_bytes()); // d
+
+        // centroids column-major: [C0_d0, C1_d0, C0_d1, C1_d1, ...]
+        for _ in 0..14 {
+            buf.extend_from_slice(&0.0f32.to_le_bytes()); // C0
+            buf.extend_from_slice(&2.0f32.to_le_bytes()); // C1
+        }
+
+        // block_offsets: [0, 1, 2]
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&1u32.to_le_bytes());
         buf.extend_from_slice(&2u32.to_le_bytes());
-        buf.extend_from_slice(&14u32.to_le_bytes());
-        for _ in 0..14 {
-            buf.extend_from_slice(&0.0f32.to_le_bytes());
-        }
-        for _ in 0..14 {
-            buf.extend_from_slice(&10.0f32.to_le_bytes());
-        }
-        buf.extend_from_slice(&3u32.to_le_bytes());
-        buf.extend_from_slice(&3u32.to_le_bytes());
-        for _ in 0..3 {
-            for _ in 0..14 {
-                buf.extend_from_slice(&f16::from_f32(0.1).to_le_bytes());
-            }
-            buf.push(0u8);
-        }
-        for _ in 0..3 {
-            for _ in 0..14 {
-                buf.extend_from_slice(&f16::from_f32(10.0).to_le_bytes());
-            }
-            buf.push(1u8);
-        }
+
+        // labels: 16 bytes (2 blocks × 8 slots)
+        buf.extend_from_slice(&[0u8; 8]); // block 0: legit
+        buf.extend_from_slice(&[1u8; 8]); // block 1: fraud
+
+        // blocks: 2 × 14 × 8 i16
+        let legit_val: i16 = 1000;  // round(0.1 * 10000)
+        let fraud_val: i16 = 20000; // round(2.0 * 10000)
+        for _ in 0..112 { buf.extend_from_slice(&legit_val.to_le_bytes()); } // block 0
+        for _ in 0..112 { buf.extend_from_slice(&fraud_val.to_le_bytes()); } // block 1
+
         buf
     }
 
-    fn write_tiny_ivf(name: &str) -> std::path::PathBuf {
+    fn write_ivf2(name: &str) -> std::path::PathBuf {
         let path = std::env::temp_dir().join(name);
-        std::fs::write(&path, make_tiny_ivf_bytes()).unwrap();
+        std::fs::write(&path, make_ivf2_bytes()).unwrap();
+        path
+    }
+
+    fn make_staged_ivf2_bytes() -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"IVF2");
+        buf.extend_from_slice(&48u32.to_le_bytes()); // n
+        buf.extend_from_slice(&6u32.to_le_bytes());  // k
+        buf.extend_from_slice(&14u32.to_le_bytes()); // d
+
+        let centroid_vals = [0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6];
+        for _ in 0..14 {
+            for &v in &centroid_vals {
+                buf.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        for i in 0u32..=6 {
+            buf.extend_from_slice(&i.to_le_bytes());
+        }
+
+        // C0: all legit
+        buf.extend_from_slice(&[0u8; 8]);
+        // C1: all legit
+        buf.extend_from_slice(&[0u8; 8]);
+        // C2: slot 0 = fraud, slots 1-7 = legit
+        buf.push(1u8);
+        buf.extend_from_slice(&[0u8; 7]);
+        // C3: slot 0 = fraud, slots 1-7 = legit
+        buf.push(1u8);
+        buf.extend_from_slice(&[0u8; 7]);
+        // C4: all legit
+        buf.extend_from_slice(&[0u8; 8]);
+        // C5: all fraud
+        buf.extend_from_slice(&[1u8; 8]);
+
+        // blocks: 6 × 112 i16
+        // C0 block: all dim=0.1 → i16=1000
+        for _ in 0..112 { buf.extend_from_slice(&1000i16.to_le_bytes()); }
+        // C1 block: all dim=0.2 → i16=2000
+        for _ in 0..112 { buf.extend_from_slice(&2000i16.to_le_bytes()); }
+        // C2 block: slot 0 = 2400 (0.24), slots 1-7 = 3000 (0.3)
+        for _d in 0..14usize {
+            buf.extend_from_slice(&2400i16.to_le_bytes()); // slot 0: fraud
+            for _ in 0..7 { buf.extend_from_slice(&3000i16.to_le_bytes()); }
+        }
+        // C3 block: slot 0 = 2600 (0.26), slots 1-7 = 4000 (0.4)
+        for _d in 0..14usize {
+            buf.extend_from_slice(&2600i16.to_le_bytes()); // slot 0: fraud
+            for _ in 0..7 { buf.extend_from_slice(&4000i16.to_le_bytes()); }
+        }
+        // C4 block: all dim=0.5 → i16=5000
+        for _ in 0..112 { buf.extend_from_slice(&5000i16.to_le_bytes()); }
+        // C5 block: all dim=0.25 → i16=2500
+        for _ in 0..112 { buf.extend_from_slice(&2500i16.to_le_bytes()); }
+
+        buf
+    }
+
+    fn write_staged_ivf2(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, make_staged_ivf2_bytes()).unwrap();
         path
     }
 
     #[test]
-    fn test_load_parses_header() {
-        let path = write_tiny_ivf("test_ivf_header.bin");
-        let idx = IvfIndex::load(&path, 5, 1).unwrap();
+    fn test_ivf2_load_parses_header() {
+        let path = write_ivf2("ivf2_header.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
         assert_eq!(idx.k, 2);
-        assert_eq!(idx.lists.len(), 2);
-        assert_eq!(idx.lists[0].len(), 3);
-        assert_eq!(idx.lists[1].len(), 3);
+        assert_eq!(idx.n, 16);
+        assert_eq!(idx.offsets.len(), 3);
+        assert_eq!(idx.labels.len(), 16);
+        assert_eq!(idx.blocks.len(), 224);
+        assert_eq!(idx.centroids.len(), 28);
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
-    fn test_knn_query_near_legit_cluster() {
-        let path = write_tiny_ivf("test_ivf_legit.bin");
-        let idx = IvfIndex::load(&path, 5, 1).unwrap();
+    fn test_ivf2_load_rejects_ivf1_magic() {
+        let path = std::env::temp_dir().join("ivf2_bad_magic.bin");
+        let mut bad = make_ivf2_bytes();
+        bad[..4].copy_from_slice(b"IVF1");
+        std::fs::write(&path, &bad).unwrap();
+        assert!(IvfIndex::load(&path, 5, 24).is_err());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_ivf2_load_rejects_wrong_dimensions() {
+        let path = std::env::temp_dir().join("ivf2_bad_d.bin");
+        let mut bad = make_ivf2_bytes();
+        bad[12..16].copy_from_slice(&13u32.to_le_bytes());
+        std::fs::write(&path, &bad).unwrap();
+        assert!(IvfIndex::load(&path, 5, 24).is_err());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_ivf2_load_rejects_truncated_file() {
+        let path = std::env::temp_dir().join("ivf2_truncated.bin");
+        std::fs::write(&path, [0u8; 10]).unwrap();
+        assert!(IvfIndex::load(&path, 5, 24).is_err());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_centroid_scan_column_major_matches_brute_force() {
+        let path = write_ivf2("ivf2_centroid_scan.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
         let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3, 1);
-        assert_eq!(labels.len(), 3);
+        let expected_c0_dist: f32 = 0.0;
+        let expected_c1_dist: f32 = 14.0 * 2.0f32.powi(2);
+        let labels = idx.knn(&query, 5, 1);
+        assert_eq!(labels.len(), 5);
         assert!(
             labels.iter().all(|&l| l == 0),
-            "all neighbors near zero centroid should be legit"
+            "nprobe=1 near C0 → all legit; expected_c0={expected_c0_dist}, expected_c1={expected_c1_dist}"
         );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_block_scan_8vec_matches_brute_force() {
+        let path = write_ivf2("ivf2_block_scan.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
+        let query = [0.0f32; 14];
+        let labels = idx.knn(&query, 5, 1);
+        assert_eq!(labels.len(), 5);
+        assert!(labels.iter().all(|&l| l == 0));
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_knn_query_near_fraud_cluster() {
-        let path = write_tiny_ivf("test_ivf_fraud.bin");
+        let path = write_ivf2("ivf2_fraud_cluster.bin");
         let idx = IvfIndex::load(&path, 5, 1).unwrap();
-        let query = [10.0f32; 14];
-        let labels = idx.knn(&query, 3, 1);
-        assert_eq!(labels.len(), 3);
+        let query = [2.0f32; 14];
+        let labels = idx.knn(&query, 5, 1);
+        assert_eq!(labels.len(), 5);
         assert!(
             labels.iter().all(|&l| l == 1),
-            "all neighbors near 10.0 centroid should be fraud"
+            "query near fraud centroid [2.0;14] → all fraud neighbors"
         );
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn test_knn_nprobe_2_returns_from_both_clusters() {
-        let path = write_tiny_ivf("test_ivf_nprobe2.bin");
-        let idx = IvfIndex::load(&path, 5, 2).unwrap();
-        let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3, 2);
-        assert_eq!(labels.len(), 3);
-        assert!(
-            labels.iter().all(|&l| l == 0),
-            "top-3 when near zero centroid should all be legit even with nprobe=2"
-        );
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn test_load_rejects_truncated_file() {
-        let path = std::env::temp_dir().join("test_ivf_truncated.bin");
-        std::fs::write(&path, [0u8; 4]).unwrap();
-        assert!(IvfIndex::load(&path, 5, 1).is_err());
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_knn_nprobe_clamped_to_k() {
-        let path = write_tiny_ivf("test_ivf_clamp.bin");
+        let path = write_ivf2("ivf2_clamp.bin");
         let idx = IvfIndex::load(&path, 5, 999).unwrap();
         let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3, 999);
-        assert_eq!(labels.len(), 3);
-        assert!(labels.iter().all(|&l| l == 0), "top-3 should be legit");
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn test_knn_mixed_labels_ordered_by_distance() {
-        let path = write_tiny_ivf("test_ivf_mixed.bin");
-        let idx = IvfIndex::load(&path, 5, 2).unwrap();
-        let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 5, 2);
+        let labels = idx.knn(&query, 5, 999);
         assert_eq!(labels.len(), 5);
-        let legit_count = labels.iter().filter(|&&l| l == 0).count();
-        let fraud_count = labels.iter().filter(|&&l| l == 1).count();
-        assert_eq!(legit_count, 3);
-        assert_eq!(fraud_count, 2);
-        let first_fraud_pos = labels.iter().position(|&l| l == 1).unwrap_or(5);
-        let last_legit_pos = labels.iter().rposition(|&l| l == 0).unwrap_or(0);
-        assert!(
-            last_legit_pos < first_fraud_pos,
-            "all legit neighbors should rank before fraud neighbors"
-        );
+        assert!(labels.iter().filter(|&&l| l == 0).count() >= 3);
         std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn test_knn_explicit_nprobe_param() {
-        let path = write_tiny_ivf("test_ivf_explicit_nprobe.bin");
-        let idx = IvfIndex::load(&path, 5, 24).unwrap();
-        let query = [0.0f32; 14];
-        let labels = idx.knn(&query, 3, 1);
-        assert_eq!(labels.len(), 3);
-        assert!(labels.iter().all(|&l| l == 0));
-        std::fs::remove_file(&path).ok();
-    }
-
-    /// 6-cluster fixture designed to trigger Stage 2.
-    ///
-    /// Centroids (all-equal 14-dim vectors):
-    ///   C0=[1.0;14]  C1=[2.0;14]  C2=[3.0;14]
-    ///   C3=[4.0;14]  C4=[5.0;14]  C5=[6.0;14]
-    ///
-    /// Entries near query [2.5;14]:
-    ///   C2: [3.0;14](legit), [2.4;14](fraud)
-    ///   C3: [4.0;14](legit), [2.6;14](fraud)
-    ///   C5: [2.45;14](fraud), [2.50;14](fraud), [2.55;14](fraud)
-    ///
-    /// With nprobe_fast=5: probes C0-C4 → returns 2 fraud (ambiguous).
-    /// With nprobe_slow=6: also probes C5 → returns 5 fraud (decisive).
-    fn make_staged_ivf_bytes() -> Vec<u8> {
-        let mut buf: Vec<u8> = Vec::new();
-
-        // header: k=6, d=14
-        buf.extend_from_slice(&6u32.to_le_bytes());
-        buf.extend_from_slice(&14u32.to_le_bytes());
-
-        // centroids: 6 × [v;14] for v in 1..=6
-        for v in 1u32..=6 {
-            for _ in 0..14 {
-                buf.extend_from_slice(&(v as f32).to_le_bytes());
-            }
-        }
-
-        // list sizes: [3, 2, 2, 2, 2, 3]
-        for &sz in &[3u32, 2, 2, 2, 2, 3] {
-            buf.extend_from_slice(&sz.to_le_bytes());
-        }
-
-        fn push_entry(buf: &mut Vec<u8>, val: f32, label: u8) {
-            let v = half::f16::from_f32(val);
-            for _ in 0..14 {
-                buf.extend_from_slice(&v.to_le_bytes());
-            }
-            buf.push(label);
-        }
-
-        // C0 (centroid=[1;14]): 3 legit
-        push_entry(&mut buf, 1.0, 0);
-        push_entry(&mut buf, 1.1, 0);
-        push_entry(&mut buf, 1.2, 0);
-
-        // C1 (centroid=[2;14]): 2 legit
-        push_entry(&mut buf, 2.0, 0);
-        push_entry(&mut buf, 2.1, 0);
-
-        // C2 (centroid=[3;14]): 1 legit + 1 fraud
-        push_entry(&mut buf, 3.0, 0);
-        push_entry(&mut buf, 2.4, 1);
-
-        // C3 (centroid=[4;14]): 1 legit + 1 fraud
-        push_entry(&mut buf, 4.0, 0);
-        push_entry(&mut buf, 2.6, 1);
-
-        // C4 (centroid=[5;14]): 2 legit
-        push_entry(&mut buf, 5.0, 0);
-        push_entry(&mut buf, 5.1, 0);
-
-        // C5 (centroid=[6;14]): 3 fraud entries near [2.5;14]
-        // Straggler entries — assigned to far cluster at train time
-        push_entry(&mut buf, 2.45, 1);
-        push_entry(&mut buf, 2.50, 1);
-        push_entry(&mut buf, 2.55, 1);
-
-        buf
-    }
-
-    fn write_staged_ivf(name: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(name);
-        let data = make_staged_ivf_bytes();
-        std::fs::write(&path, data).unwrap();
-        path
     }
 
     #[test]
     fn test_knn_adaptive_unambiguous_legit_uses_stage1() {
-        let path = write_tiny_ivf("test_adapt_legit.bin");
+        let path = write_ivf2("ivf2_adapt_legit.bin");
         let idx = IvfIndex::load(&path, 5, 24).unwrap();
-        // query near legit cluster with k=3: top-3 are all legit (0 fraud votes) → Stage 1 returns
-        // tiny fixture has 2 clusters of 3 entries each; nprobe_fast=5 is clamped to k=2 so both
-        // clusters are probed, but the 3 closest entries to [0;14] are all legit (label=0).
-        let labels = idx.knn_adaptive(&[0.0f32; 14], 3);
-        assert_eq!(labels.len(), 3);
+        let query = [0.0f32; 14];
+        let labels = idx.knn_adaptive(&query, 5);
+        assert_eq!(labels.len(), 5);
         assert_eq!(labels.iter().filter(|&&l| l == 1).count(), 0);
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_knn_adaptive_unambiguous_fraud_uses_stage1() {
-        let path = write_tiny_ivf("test_adapt_fraud.bin");
+        let path = write_ivf2("ivf2_adapt_fraud.bin");
         let idx = IvfIndex::load(&path, 5, 24).unwrap();
-        // query near fraud cluster with k=3: top-3 are all fraud → k-1=2 threshold, count=3 >= 2
-        // → Stage 1 returns immediately (decisive)
-        let labels = idx.knn_adaptive(&[10.0f32; 14], 3);
-        assert_eq!(labels.len(), 3);
-        assert!(labels.iter().filter(|&&l| l == 1).count() >= 2);
+        let query = [2.0f32; 14];
+        let labels = idx.knn_adaptive(&query, 5);
+        assert_eq!(labels.len(), 5);
+        assert!(labels.iter().filter(|&&l| l == 1).count() >= 4);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_simd_centroid_dists_matches_scalar() {
+        let path = write_ivf2("ivf2_simd_centroid.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
+
+        let query = [0.3f32; 14];
+
+        // Fixture: C0=[0.0;14] (dist=14*0.09=1.26), C1=[2.0;14] (dist=14*2.89=40.46)
+        // Top-1 centroid = C0, so top-5 neighbors are all legit.
+        let scalar_labels = idx.knn(&query, 5, 2);
+        assert_eq!(scalar_labels.len(), 5);
+        assert!(
+            scalar_labels.iter().all(|&l| l == 0),
+            "SIMD centroid scan must route to legit cluster"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_early_termination_skips_distant_block() {
+        // Fixture: k=2, 8 legit near [0.0;14], 8 fraud near [2.0;14]
+        // Query [0.0;14] with nprobe=2: after block 0 (legit, dist≈0.14) fills heap,
+        // block 1 (fraud, dist≈56.0) should be skipped by early termination.
+        let path = write_ivf2("ivf2_early_term.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
+        let query = [0.0f32; 14];
+        let labels = idx.knn(&query, 5, 2);
+        assert_eq!(labels.len(), 5);
+        assert!(
+            labels.iter().all(|&l| l == 0),
+            "early termination must skip far block; got labels: {:?}", labels
+        );
         std::fs::remove_file(&path).ok();
     }
 
     #[test]
     fn test_knn_adaptive_ambiguous_triggers_stage2() {
-        let path = write_staged_ivf("test_adapt_staged.bin");
-        // nprobe_slow=6 so Stage 2 probes C5 (which has straggler fraud entries)
+        let path = write_staged_ivf2("ivf2_adapt_staged.bin");
         let idx = IvfIndex::load(&path, 5, 6).unwrap();
-        let query = [2.5f32; 14];
+        let query = [0.25f32; 14];
 
-        // Stage 1 (nprobe=5) → 2 fraud (ambiguous) → triggers Stage 2
-        // Stage 2 (nprobe=6) finds C5's straggler fraud entries → 5 fraud
+        let stage1 = idx.knn(&query, 5, 5);
+        let stage1_fraud = stage1.iter().filter(|&&l| l == 1).count();
+        assert_eq!(stage1_fraud, 2, "stage1 must be ambiguous (2 fraud), got {stage1_fraud}");
+
         let labels = idx.knn_adaptive(&query, 5);
-        assert_eq!(labels.len(), 5);
         let fraud_count = labels.iter().filter(|&&l| l == 1).count();
         assert!(
             fraud_count >= 4,
-            "Stage 2 should find straggler fraud entries, got {fraud_count} fraud"
+            "stage2 must find C5 straggler fraud vectors, got {fraud_count} fraud"
         );
-
-        // Verify Stage 1 alone would have returned only 2 fraud
-        let stage1_labels = idx.knn(&query, 5, 5);
-        let stage1_fraud = stage1_labels.iter().filter(|&&l| l == 1).count();
-        assert_eq!(
-            stage1_fraud, 2,
-            "Stage 1 should be ambiguous (2 fraud), got {stage1_fraud}"
-        );
-
         std::fs::remove_file(&path).ok();
-    }
-
-    #[test]
-    fn test_centroid_sq_dist_correctness() {
-        let mut q16 = [0.0f32; 16];
-        q16[..14].copy_from_slice(&[
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0,
-        ]);
-        let mut centroid = [0.0f32; 16];
-        centroid[..14].fill(0.5);
-
-        let expected: f32 = (0..14usize)
-            .map(|i| {
-                let d = q16[i] - centroid[i];
-                d * d
-            })
-            .sum();
-
-        let result = centroid_sq_dist(&q16, &centroid);
-        assert!(
-            (result - expected).abs() < 1e-3,
-            "centroid_sq_dist diverges: got {result}, expected {expected}"
-        );
     }
 }

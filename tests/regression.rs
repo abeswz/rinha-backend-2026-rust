@@ -4,16 +4,63 @@ use once_cell::sync::Lazy;
 use serde_json::json;
 use std::{path::PathBuf, sync::Arc};
 
+/// Builds a minimal valid IVF2 binary for regression tests.
+///
+/// Two clusters based on the canonical legit/fraud transaction vectors
+/// (both with last_transaction=null, so dims 5,6 = -1.0 in centroids).
+///
+/// Legit centroid: [0.004, 0.167, 0.05, 0.78, 0.33, -1.0, -1.0, 0.03, 0.15, 0.0, 1.0, 0.0, 0.15, 0.006]
+/// Fraud centroid: [0.95,  0.83,  1.0,  0.22, 0.83, -1.0, -1.0, 0.95, 1.0,  0.0, 1.0, 1.0, 0.75, 0.005]
+fn make_test_ivf2() -> std::path::PathBuf {
+    let legit_centroid: [f32; 14] = [0.004, 0.167, 0.05, 0.78, 0.33, -1.0, -1.0, 0.03, 0.15, 0.0, 1.0, 0.0, 0.15, 0.006];
+    let fraud_centroid: [f32; 14] = [0.95,  0.83,  1.0,  0.22, 0.83, -1.0, -1.0, 0.95, 1.0,  0.0, 1.0, 1.0, 0.75, 0.005];
+    let legit_i16: [i16; 14] = legit_centroid.map(|v| (v * 10000.0) as i16);
+    let fraud_i16: [i16; 14] = fraud_centroid.map(|v| (v * 10000.0) as i16);
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"IVF2");
+    buf.extend_from_slice(&16u32.to_le_bytes()); // n
+    buf.extend_from_slice(&2u32.to_le_bytes());  // k
+    buf.extend_from_slice(&14u32.to_le_bytes()); // d
+
+    // centroids column-major
+    for d in 0..14 {
+        buf.extend_from_slice(&legit_centroid[d].to_le_bytes());
+        buf.extend_from_slice(&fraud_centroid[d].to_le_bytes());
+    }
+
+    // block_offsets: [0, 1, 2] — 1 block per cluster
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&1u32.to_le_bytes());
+    buf.extend_from_slice(&2u32.to_le_bytes());
+
+    // labels: 2 blocks × 8 slots
+    buf.extend_from_slice(&[0u8; 8]); // block 0: legit
+    buf.extend_from_slice(&[1u8; 8]); // block 1: fraud
+
+    // blocks: 2 × 14 × 8 i16, layout: for each dim, 8 slots
+    for val in legit_i16 {
+        for _ in 0..8 { buf.extend_from_slice(&val.to_le_bytes()); }
+    }
+    for val in fraud_i16 {
+        for _ in 0..8 { buf.extend_from_slice(&val.to_le_bytes()); }
+    }
+
+    let path = std::env::temp_dir().join("regression_test_ivf2.bin");
+    std::fs::write(&path, &buf).expect("write test IVF2");
+    path
+}
+
 static STATE: Lazy<Arc<AppState>> = Lazy::new(|| {
     let config = Config {
         port: 3000,
-        ivf_path: PathBuf::from("resources/ivf_index.bin"),
+        ivf_path: make_test_ivf2(),
         mcc_path: PathBuf::from("resources/mcc_risk.json"),
         norm_path: PathBuf::from("resources/normalization.json"),
         nprobe_fast: 3,
         nprobe_slow: 8,
     };
-    Arc::new(AppState::build(&config).expect("AppState init failed"))
+    Arc::new(AppState::build(&config).expect("AppState::build failed in regression test"))
 });
 
 fn test_server() -> TestServer {

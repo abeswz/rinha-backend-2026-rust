@@ -1,11 +1,26 @@
 use crate::AppState;
 use crate::{
-    domain::{fraud::FraudDecision, transaction::{Customer, LastTransaction, Merchant, Terminal, Transaction}},
-    web::dto::{FraudScoreResponse, TransactionRequest},
+    domain::fraud::FraudDecision,
+    domain::transaction::{Customer, LastTransaction, Merchant, Terminal, Transaction},
+    web::dto::TransactionRequest,
 };
-use axum::{extract::State, Json};
+use axum::{
+    extract::State,
+    http::{header, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use std::sync::Arc;
 use std::time::Duration;
+
+pub const STATIC_BODIES: [&str; 6] = [
+    r#"{"approved":true,"fraud_score":0.0}"#,
+    r#"{"approved":true,"fraud_score":0.2}"#,
+    r#"{"approved":true,"fraud_score":0.4}"#,
+    r#"{"approved":false,"fraud_score":0.6}"#,
+    r#"{"approved":false,"fraud_score":0.8}"#,
+    r#"{"approved":false,"fraud_score":1.0}"#,
+];
 
 pub async fn ready_handler() -> &'static str {
     "ok"
@@ -14,10 +29,8 @@ pub async fn ready_handler() -> &'static str {
 pub async fn fraud_score_handler(
     State(state): State<Arc<AppState>>,
     Json(req): Json<TransactionRequest>,
-) -> impl axum::response::IntoResponse {
+) -> impl IntoResponse {
     let tx = into_transaction(req);
-    // 1600ms timeout: 200ms below nginx proxy_read_timeout (1800ms).
-    // Fallback approved=true trades FN (penalty 3) vs HTTP 504 (penalty 5).
     let decision = tokio::time::timeout(
         Duration::from_millis(1600),
         tokio::task::spawn_blocking(move || state.use_case.execute(&tx)),
@@ -28,11 +41,15 @@ pub async fn fraud_score_handler(
     .unwrap_or(FraudDecision {
         approved: true,
         fraud_score: 0.0,
+        fraud_count: 0,
     });
-    Json(FraudScoreResponse {
-        approved: decision.approved,
-        fraud_score: decision.fraud_score,
-    })
+
+    let body = STATIC_BODIES[decision.fraud_count.min(5)];
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "application/json")],
+        body,
+    )
 }
 
 fn into_transaction(req: TransactionRequest) -> Transaction {
@@ -65,42 +82,54 @@ fn into_transaction(req: TransactionRequest) -> Transaction {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::domain::fraud::FraudDecision;
     use std::time::Duration;
 
+    #[test]
+    fn test_static_bodies_all_valid_json() {
+        for (i, body) in STATIC_BODIES.iter().enumerate() {
+            let v: serde_json::Value = serde_json::from_str(body)
+                .unwrap_or_else(|_| panic!("body[{i}] is not valid JSON: {body}"));
+            assert!(v.get("approved").is_some(), "body[{i}] missing 'approved'");
+            assert!(v.get("fraud_score").is_some(), "body[{i}] missing 'fraud_score'");
+        }
+    }
+
     #[tokio::test]
     async fn test_timeout_fallback_is_approved_true() {
-        // When KNN exceeds timeout, fallback must be approved=true.
-        // Scoring: FN penalty=3 < HTTP error penalty=5.
-        // Changing to approved=false: fraud slips through AND adds FN penalty.
         let result = tokio::time::timeout(
             Duration::from_millis(50),
             tokio::task::spawn_blocking(|| {
                 std::thread::sleep(Duration::from_millis(500));
-                FraudDecision { approved: false, fraud_score: 1.0 }
+                FraudDecision { approved: false, fraud_score: 1.0, fraud_count: 5 }
             }),
         )
         .await
         .ok()
         .and_then(|r| r.ok())
-        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0 });
+        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0, fraud_count: 0 });
 
         assert!(result.approved, "timeout fallback must be approved=true");
-        assert_eq!(result.fraud_score, 0.0);
+        assert_eq!(result.fraud_count, 0);
     }
 
     #[tokio::test]
     async fn test_fast_execution_returns_actual_decision() {
         let result = tokio::time::timeout(
             Duration::from_millis(1600),
-            tokio::task::spawn_blocking(|| FraudDecision { approved: false, fraud_score: 0.8 }),
+            tokio::task::spawn_blocking(|| FraudDecision {
+                approved: false,
+                fraud_score: 0.8,
+                fraud_count: 4,
+            }),
         )
         .await
         .ok()
         .and_then(|r| r.ok())
-        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0 });
+        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0, fraud_count: 0 });
 
-        assert!(!result.approved, "fast execution must return actual result, not fallback");
-        assert_eq!(result.fraud_score, 0.8);
+        assert!(!result.approved);
+        assert_eq!(result.fraud_count, 4);
     }
 }

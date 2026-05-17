@@ -135,3 +135,10 @@ tools/.venv/
 memory/
 
 test/result.json
+
+# =========================================================
+# Claude Code
+# =========================================================
+
+.claude/worktrees/
+.claude/plugins/
