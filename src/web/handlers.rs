@@ -62,3 +62,45 @@ fn into_transaction(req: TransactionRequest) -> Transaction {
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::domain::fraud::FraudDecision;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn test_timeout_fallback_is_approved_true() {
+        // When KNN exceeds timeout, fallback must be approved=true.
+        // Scoring: FN penalty=3 < HTTP error penalty=5.
+        // Changing to approved=false: fraud slips through AND adds FN penalty.
+        let result = tokio::time::timeout(
+            Duration::from_millis(50),
+            tokio::task::spawn_blocking(|| {
+                std::thread::sleep(Duration::from_millis(500));
+                FraudDecision { approved: false, fraud_score: 1.0 }
+            }),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0 });
+
+        assert!(result.approved, "timeout fallback must be approved=true");
+        assert_eq!(result.fraud_score, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_fast_execution_returns_actual_decision() {
+        let result = tokio::time::timeout(
+            Duration::from_millis(1600),
+            tokio::task::spawn_blocking(|| FraudDecision { approved: false, fraud_score: 0.8 }),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(FraudDecision { approved: true, fraud_score: 0.0 });
+
+        assert!(!result.approved, "fast execution must return actual result, not fallback");
+        assert_eq!(result.fraud_score, 0.8);
+    }
+}

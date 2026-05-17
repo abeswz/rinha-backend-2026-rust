@@ -5,6 +5,13 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+// Under 0.475 CPU cgroup (competition constraint): more threads = cgroup throttling = reactor starvation.
+// These constants caused p99=2001ms + 1986 HTTP errors when WORKER=4 + unbounded blocking pool.
+// Under 0.475 CPU cgroup per instance: WORKER=4 + unbounded blocking caused p99=2001ms + 1986 HTTP errors.
+// Little's Law at peak: ~450 req/s × 5ms KNN ≈ 2.25 concurrent → 2 blocking threads is the right bound.
+const TOKIO_WORKER_THREADS: usize = 2;
+const TOKIO_MAX_BLOCKING_THREADS: usize = 2;
+
 fn main() {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
 
@@ -17,7 +24,8 @@ fn main() {
     tracing::info!("listening on {addr}");
 
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
+        .worker_threads(TOKIO_WORKER_THREADS)
+        .max_blocking_threads(TOKIO_MAX_BLOCKING_THREADS)
         .enable_all()
         .build()
         .expect("failed to build tokio runtime")
@@ -42,4 +50,20 @@ fn main() {
                 axum::serve(tcp, router).await.expect("server error");
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tokio_runtime_config_bounded_for_cgroup_throttling() {
+        // 0.475 CPU cgroup per instance: each extra thread steals from reactor.
+        // WORKER=4 + unbounded blocking → p99=2001ms + 1986 HTTP errors in competition.
+        assert_eq!(TOKIO_WORKER_THREADS, 2, "worker_threads must be 2 on 0.475 CPU cgroup");
+        assert_eq!(
+            TOKIO_MAX_BLOCKING_THREADS, 2,
+            "max_blocking_threads must be 2: unbounded blocking pool starves Tokio reactor under cgroup throttling"
+        );
+    }
 }
