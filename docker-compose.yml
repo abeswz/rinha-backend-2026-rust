@@ -5,7 +5,7 @@ services:
   nginx:
     image: nginx:alpine
     command: >
-      sh -c "until wget -qO- http://api1:3000/ready >/dev/null 2>&1 && wget -qO- http://api2:3000/ready >/dev/null 2>&1; do sleep 1; done && exec nginx -g 'daemon off;'"
+      sh -c "until [ -S /run/sock/api1.sock ] && [ -S /run/sock/api2.sock ]; do sleep 1; done && exec nginx -g 'daemon off;'"
     ports:
       - "9999:9999"
     volumes:
@@ -25,14 +25,17 @@ services:
   api1:
     build: .
     environment:
-      - PORT=3000
-      - IVF_NPROBE=24
-      - IVF_NPROBE_FAST=5
-      - SOCKET_PATH=/run/sock/api1.sock
+      - SOCK=/run/sock/api1.sock
     volumes:
       - sock:/run/sock
     networks:
       - fraud-net
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     deploy:
       resources:
         limits:
@@ -42,14 +45,17 @@ services:
   api2:
     build: .
     environment:
-      - PORT=3000
-      - IVF_NPROBE=24
-      - IVF_NPROBE_FAST=5
-      - SOCKET_PATH=/run/sock/api2.sock
+      - SOCK=/run/sock/api2.sock
     volumes:
       - sock:/run/sock
     networks:
       - fraud-net
+    security_opt:
+      - seccomp:unconfined
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     deploy:
       resources:
         limits:
