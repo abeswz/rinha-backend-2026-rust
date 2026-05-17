@@ -1,0 +1,11 @@
+target/
+.git/
+.gitignore
+.dockerignore
+docs/
+data-generator/
+test/
+*.md
+.idea/
+.vscode/
+memory/
