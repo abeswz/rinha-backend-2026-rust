@@ -75,7 +75,7 @@ fn lloyd_assign(vecs: &[[f32; D]], centroids: &[[f32; D]]) -> Vec<usize> {
         .map(|p| p.get())
         .unwrap_or(4)
         .min(16);
-    let chunk = (n + nthreads - 1) / nthreads;
+    let chunk = n.div_ceil(nthreads);
     let mut assignments = vec![0usize; n];
 
     std::thread::scope(|s| {
@@ -106,7 +106,7 @@ fn lloyd_update(vecs: &[[f32; D]], assignments: &[usize], k: usize) -> Vec<[f32;
     }
     for (ci, sum) in sums.iter_mut().enumerate() {
         let c = counts[ci].max(1) as f32;
-        for d in 0..D { sum[d] /= c; }
+        for val in sum.iter_mut().take(D) { *val /= c; }
     }
     sums
 }
@@ -131,13 +131,14 @@ fn write_ivf1(
     let mut block_idx: u32 = 0;
     for g in &groups {
         offsets.push(block_idx);
-        let nblocks = (g.len() + 7) / 8;
+        let nblocks = g.len().div_ceil(8);
         for b in 0..nblocks {
             for slot in 0..8usize {
                 let vec_idx = b * 8 + slot;
                 let label = if vec_idx < g.len() { labels[g[vec_idx]] } else { 0 };
                 label_buf.push(label);
             }
+            #[allow(clippy::needless_range_loop)]
             for d in 0..D {
                 for slot in 0..8usize {
                     let vec_idx = b * 8 + slot;

@@ -67,7 +67,7 @@ mod tests {
             merchant_avg_amount: 60.25,
             is_online: false,
             card_present: true,
-            km_from_home: 29.2331036248,
+            km_from_home: 29.233_103_f32,
             has_last_tx: false,
             minutes_since_last: 0.0,
             km_from_current: 0.0,

@@ -32,7 +32,7 @@ pub fn warmup() {
 fn probe(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
     #[cfg(target_arch = "x86_64")]
     {
-        return unsafe { probe_avx2(q, ds, nprobe) };
+        unsafe { probe_avx2(q, ds, nprobe) }
     }
     #[cfg(not(target_arch = "x86_64"))]
     probe_scalar(q, ds, nprobe)
@@ -56,9 +56,11 @@ fn top_n_centroids(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> Vec<usize> {
     let cp = ds.centroids.as_ptr();
     let mut dists = vec![0.0f32; k];
 
+    #[allow(clippy::needless_range_loop)]
     for d in 0..14usize {
         let qd = q[d];
         let base = d * k;
+        #[allow(clippy::needless_range_loop)]
         for ci in 0..k {
             let diff = unsafe { *cp.add(base + ci) } - qd;
             dists[ci] += diff * diff;
@@ -193,6 +195,7 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8
             _mm256_storeu_ps(dists.as_mut_ptr(), acc);
             let labels_ptr = lp.add(block_i * 8);
 
+            #[allow(clippy::needless_range_loop)]
             for slot in 0..8usize {
                 let bits = dists[slot].to_bits();
                 if bits < worst_bits {
