@@ -6,7 +6,7 @@ READY_URL      := http://localhost:$(PORT)/ready
 GIT_SHA        := $(shell git rev-parse --short HEAD)
 IMAGE          := ghcr.io/abeswz/fraud-detection-rinha-backend-2026:$(GIT_SHA)
 
-.PHONY: all build ivf up down dev smoke load test clean doc help profile publish submission
+.PHONY: all build ivf up down dev smoke load bench score test clean doc help profile publish submission
 
 all: help
 
@@ -18,6 +18,8 @@ help:
 	@echo "  make ivf   Generate resources/ivf_index.bin via Python (3-8 min)"
 	@echo "  make smoke Run k6 smoke test (5 requests)"
 	@echo "  make load  Run k6 load test (54k transactions, 120s ramp)"
+	@echo "  make score Show score summary from last load test (test/results.json)"
+	@echo "  make bench Full local simulation: down+up+load+score (same cgroup limits as competition)"
 	@echo "  make build   cargo build --release"
 	@echo "  make profile Build profiling binary + run under samply (open Firefox Profiler)"
 	@echo "  make doc     Open rustdoc in browser (cargo doc --open)"
@@ -74,6 +76,12 @@ smoke:
 
 load:
 	k6 run test/test.js
+
+score:
+	@jq -r '"p99: \(.p99)  score: \(.scoring.final_score)  FP=\(.scoring.breakdown.false_positive_detections) FN=\(.scoring.breakdown.false_negative_detections) ERR=\(.scoring.breakdown.http_errors)  p99_score=\(.scoring.p99_score.value) det_score=\(.scoring.detection_score.value)"' test/results.json
+
+# Full constrained local simulation (same CPU/memory limits as competition)
+bench: down up load score
 
 # ── Misc ───────────────────────────────────────────────────────────────────
 

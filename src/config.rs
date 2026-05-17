@@ -28,7 +28,7 @@ impl Config {
                     .unwrap_or_else(|_| "resources/normalization.json".to_string()),
             ),
             nprobe_fast: std::env::var("IVF_NPROBE_FAST")
-                .unwrap_or_else(|_| "3".to_string())
+                .unwrap_or_else(|_| "5".to_string())
                 .parse()
                 .expect("IVF_NPROBE_FAST must be a valid integer"),
             nprobe_slow: std::env::var("IVF_NPROBE")
@@ -52,7 +52,9 @@ mod tests {
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::remove_var("IVF_NPROBE_FAST");
         let config = Config::from_env();
-        assert_eq!(config.nprobe_fast, 3);
+        // nprobe_fast=2 causes FP=17/FN=11 vs FP=1/FN=2 at nprobe_fast=5.
+        // Default must be >= 5 so `make dev` (no env var) also gets good accuracy.
+        assert_eq!(config.nprobe_fast, 5);
     }
 
     #[test]
