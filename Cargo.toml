@@ -3,6 +3,10 @@ name = "fraud-detection"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "fraud_detection"
+path = "src/lib.rs"
+
 [[bin]]
 name = "fraud-detection"
 path = "src/main.rs"
