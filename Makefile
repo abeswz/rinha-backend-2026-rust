@@ -49,7 +49,7 @@ $(IVF_BIN):
 
 up:
 	docker compose build
-	docker compose up -d
+	docker compose --compatibility up -d
 	@echo "Waiting for $(READY_URL)..."
 	@until curl -sf $(READY_URL) > /dev/null 2>&1; do \
 		printf '.'; sleep 1; \
@@ -57,7 +57,7 @@ up:
 	@echo " ready."
 
 down:
-	docker compose down
+	docker compose --compatibility down
 
 # ── Local dev (single instance on port 9999, no Docker) ───────────────────
 
