@@ -45,6 +45,7 @@ unsafe fn probe_avx2(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
     scan_blocks_avx2(q, ds, &probed)
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 fn probe_scalar(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
     let probed = top_n_centroids(q, ds, nprobe);
     scan_blocks_scalar(q, ds, &probed)
@@ -74,6 +75,7 @@ fn top_n_centroids(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> Vec<usize> {
     indices[..nprobe].to_vec()
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8; 5] {
     const K_NEIGHBORS: usize = 5;
     let mut top: [(u32, u8); 5] = [(u32::MAX, 0u8); K_NEIGHBORS];

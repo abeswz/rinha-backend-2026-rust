@@ -42,7 +42,7 @@ fn kmeans_plus_plus_init(vecs: &[[f32; D]], k: usize, sample_n: usize) -> Vec<[f
     let mut rng = 0xdeadbeef_u64;
     let lcg = |r: &mut u64| -> usize {
         *r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-        ((*r >> 33) as usize)
+        (*r >> 33) as usize
     };
 
     let mut centers: Vec<[f32; D]> = Vec::with_capacity(k);

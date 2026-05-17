@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 static INDEX_GZ: &[u8] = include_bytes!("../../data/index.bin.gz");
 static DATASET: OnceLock<Dataset> = OnceLock::new();
 
+#[allow(dead_code)]
 pub struct Dataset {
     pub n: usize,
     pub k: usize,
@@ -28,7 +29,8 @@ fn decode() -> Dataset {
     let mut raw: Vec<u8> = Vec::new();
     gz.read_to_end(&mut raw).expect("failed to decompress index");
 
-    let mut pos = 0usize;
+    assert_eq!(&raw[..4], b"IVF1", "bad IVF1 magic");
+    let mut pos = 4usize;
 
     macro_rules! read_u32 {
         () => {{
@@ -37,9 +39,6 @@ fn decode() -> Dataset {
             v
         }};
     }
-
-    assert_eq!(&raw[..4], b"IVF1", "bad IVF1 magic");
-    pos = 4;
 
     let n = read_u32!() as usize;
     let k = read_u32!() as usize;
