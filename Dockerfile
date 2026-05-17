@@ -6,7 +6,7 @@ COPY tools/ tools/
 RUN uv pip install --system --no-cache -r tools/requirements.txt && \
     python tools/build_ivf.py
 
-FROM rust:1.83-slim AS rust-builder
+FROM rust:1.85-slim AS rust-builder
 RUN apt-get update && apt-get install -y --no-install-recommends pkg-config && \
     rm -rf /var/lib/apt/lists/*
 WORKDIR /app
