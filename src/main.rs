@@ -2,41 +2,34 @@ mod env;
 mod fraud;
 mod net;
 
-use monoio::net::{ListenerOpts, UnixListener};
+use tokio::net::UnixListener;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     fraud::data::init();
     fraud::knn::warmup();
 
     let sock_path = env::sock_path();
     let _ = std::fs::remove_file(&sock_path);
 
-    monoio::RuntimeBuilder::<monoio::IoUringDriver>::new()
-        .with_entries(1024)
-        .build()
-        .expect("failed to build monoio runtime")
-        .block_on(async {
-            let opts = ListenerOpts::new().reuse_port(false).reuse_addr(false);
-            let listener = UnixListener::bind_with_config(&sock_path, &opts)
-                .expect("failed to bind unix socket");
+    let listener = UnixListener::bind(&sock_path).expect("failed to bind unix socket");
 
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o777))
-                .expect("failed to set socket permissions");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&sock_path, std::fs::Permissions::from_mode(0o777))
+        .expect("failed to set socket permissions");
 
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        monoio::spawn(net::http::serve_connection(stream));
-                    }
-                    Err(e) => {
-                        eprintln!("accept error: {e}");
-                        break;
-                    }
-                }
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(net::http::serve_connection(stream));
             }
-        });
+            Err(e) => {
+                eprintln!("accept error: {e}");
+                break;
+            }
+        }
+    }
 }

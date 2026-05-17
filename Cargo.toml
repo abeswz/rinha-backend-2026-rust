@@ -12,7 +12,7 @@ name = "build_index"
 path = "bin/build_index.rs"
 
 [dependencies]
-monoio      = { version = "0.2", default-features = false, features = ["iouring", "legacy", "macros"] }
+tokio       = { version = "1", default-features = false, features = ["rt", "macros", "net", "io-util"] }
 memchr      = "2"
 mimalloc    = { version = "0.1", default-features = false }
 aligned-vec = "0.6"

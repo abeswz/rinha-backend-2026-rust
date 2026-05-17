@@ -1,8 +1,8 @@
 use crate::fraud::{data, json, knn, vector};
 use crate::net::response::{http_body_for, RESP_BAD_REQ, RESP_NOT_FOUND, RESP_READY};
 use memchr::memmem;
-use monoio::io::{AsyncReadRent, AsyncWriteRentExt};
-use monoio::net::UnixStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixStream;
 
 const RX_CAP: usize = 8192;
 
@@ -57,15 +57,12 @@ pub async fn serve_connection(mut stream: UnixStream) {
     let mut tx_buf: Vec<u8> = Vec::with_capacity(RX_CAP);
 
     loop {
-        // Read using monoio's owned buffer API
-        let read_buf = Vec::with_capacity(RX_CAP);
-        let (res, buf) = stream.read(read_buf).await;
-        match res {
-            Ok(0) => break,
-            Err(_) => break,
-            Ok(n) => {
-                rx_buf.extend_from_slice(&buf[..n]);
-            }
+        if rx_buf.len() >= RX_CAP {
+            break;
+        }
+        match stream.read_buf(&mut rx_buf).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
         }
 
         let mut consumed = 0usize;
@@ -99,7 +96,7 @@ pub async fn serve_connection(mut stream: UnixStream) {
                         }
                     };
                     let body_end = consumed + header_end + cl;
-                    if consumed + header_end + cl > RX_CAP {
+                    if header_end + cl > RX_CAP {
                         tx_buf.extend_from_slice(RESP_BAD_REQ);
                         consumed += header_end;
                         continue;
@@ -123,13 +120,10 @@ pub async fn serve_connection(mut stream: UnixStream) {
         }
 
         if !tx_buf.is_empty() {
-            let out = std::mem::take(&mut tx_buf);
-            let (res, mut out) = stream.write_all(out).await;
-            out.clear();
-            tx_buf = out;
-            if res.is_err() {
+            if stream.write_all(&tx_buf).await.is_err() {
                 break;
             }
+            tx_buf.clear();
         }
 
         if consumed > 0 {
