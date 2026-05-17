@@ -37,6 +37,80 @@ fn centroid_dists_scalar(query: &[f32; 14], centroids: &[f32], k: usize, dists: 
     }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn centroid_dists_simd(query: &[f32; 14], centroids: &[f32], k: usize, dists: &mut Vec<f32>) {
+    use std::arch::x86_64::*;
+
+    dists.clear();
+    dists.resize(k, 0.0);
+    let dp = dists.as_mut_ptr();
+    let cp = centroids.as_ptr();
+
+    // Dim 0: initialize (mul, not fmadd)
+    {
+        let qd = _mm256_set1_ps(query[0]);
+        let mut ci = 0usize;
+        while ci + 16 <= k {
+            let d0 = _mm256_sub_ps(_mm256_loadu_ps(cp.add(ci)), qd);
+            let d1 = _mm256_sub_ps(_mm256_loadu_ps(cp.add(ci + 8)), qd);
+            _mm256_storeu_ps(dp.add(ci), _mm256_mul_ps(d0, d0));
+            _mm256_storeu_ps(dp.add(ci + 8), _mm256_mul_ps(d1, d1));
+            ci += 16;
+        }
+        while ci + 8 <= k {
+            let d0 = _mm256_sub_ps(_mm256_loadu_ps(cp.add(ci)), qd);
+            _mm256_storeu_ps(dp.add(ci), _mm256_mul_ps(d0, d0));
+            ci += 8;
+        }
+        while ci < k {
+            let diff = *cp.add(ci) - query[0];
+            *dp.add(ci) = diff * diff;
+            ci += 1;
+        }
+    }
+
+    // Dims 1..14: accumulate with fmadd
+    for d in 1..14usize {
+        let base = d * k;
+        let qd = _mm256_set1_ps(query[d]);
+        let mut ci = 0usize;
+        while ci + 16 <= k {
+            let cv0 = _mm256_loadu_ps(cp.add(base + ci));
+            let cv1 = _mm256_loadu_ps(cp.add(base + ci + 8));
+            let dv0 = _mm256_sub_ps(cv0, qd);
+            let dv1 = _mm256_sub_ps(cv1, qd);
+            let a0 = _mm256_loadu_ps(dp.add(ci));
+            let a1 = _mm256_loadu_ps(dp.add(ci + 8));
+            _mm256_storeu_ps(dp.add(ci), _mm256_fmadd_ps(dv0, dv0, a0));
+            _mm256_storeu_ps(dp.add(ci + 8), _mm256_fmadd_ps(dv1, dv1, a1));
+            ci += 16;
+        }
+        while ci + 8 <= k {
+            let cv = _mm256_loadu_ps(cp.add(base + ci));
+            let dv = _mm256_sub_ps(cv, qd);
+            let a = _mm256_loadu_ps(dp.add(ci));
+            _mm256_storeu_ps(dp.add(ci), _mm256_fmadd_ps(dv, dv, a));
+            ci += 8;
+        }
+        while ci < k {
+            let diff = *cp.add(base + ci) - query[d];
+            *dp.add(ci) += diff * diff;
+            ci += 1;
+        }
+    }
+}
+
+fn fill_centroid_dists(query: &[f32; 14], centroids: &[f32], k: usize, dists: &mut Vec<f32>) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+            return unsafe { centroid_dists_simd(query, centroids, k, dists) };
+        }
+    }
+    centroid_dists_scalar(query, centroids, k, dists);
+}
+
 fn block_scan_scalar(
     query: &[f32; 14],
     offsets: &[u32],
@@ -158,7 +232,7 @@ impl IvfIndex {
 
         CENTROID_BUFS.with(|bufs| {
             let mut bufs = bufs.borrow_mut();
-            centroid_dists_scalar(query, &self.centroids, self.k, &mut bufs.dists);
+            fill_centroid_dists(query, &self.centroids, self.k, &mut bufs.dists);
 
             // Use a local vec for indices (avoids re-borrow conflict)
             let mut indices: Vec<usize> = (0..self.k).collect();
@@ -406,6 +480,24 @@ mod tests {
         let labels = idx.knn_adaptive(&query, 5);
         assert_eq!(labels.len(), 5);
         assert!(labels.iter().filter(|&&l| l == 1).count() >= 4);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_simd_centroid_dists_matches_scalar() {
+        let path = write_ivf2("ivf2_simd_centroid.bin");
+        let idx = IvfIndex::load(&path, 5, 24).unwrap();
+
+        let query = [0.3f32; 14];
+
+        // Fixture: C0=[0.0;14] (dist=14*0.09=1.26), C1=[2.0;14] (dist=14*2.89=40.46)
+        // Top-1 centroid = C0, so top-5 neighbors are all legit.
+        let scalar_labels = idx.knn(&query, 5, 2);
+        assert_eq!(scalar_labels.len(), 5);
+        assert!(
+            scalar_labels.iter().all(|&l| l == 0),
+            "SIMD centroid scan must route to legit cluster"
+        );
         std::fs::remove_file(&path).ok();
     }
 
