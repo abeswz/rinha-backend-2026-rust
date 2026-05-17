@@ -98,6 +98,11 @@ pub async fn serve_connection(mut stream: UnixStream) {
                         }
                     };
                     let body_end = consumed + header_end + cl;
+                    if consumed + header_end + cl > RX_CAP {
+                        tx_buf.extend_from_slice(RESP_BAD_REQ);
+                        consumed += header_end;
+                        continue;
+                    }
                     if body_end > rx_buf.len() {
                         break; // need more data
                     }
@@ -128,8 +133,14 @@ pub async fn serve_connection(mut stream: UnixStream) {
         }
 
         // Compact rx_buf
-        if consumed > 0 && consumed <= rx_buf.len() {
-            rx_buf.drain(..consumed);
+        if consumed > 0 {
+            if consumed < rx_buf.len() {
+                let remaining = rx_buf.len() - consumed;
+                rx_buf.copy_within(consumed.., 0);
+                rx_buf.truncate(remaining);
+            } else {
+                rx_buf.clear();
+            }
         }
     }
 }
