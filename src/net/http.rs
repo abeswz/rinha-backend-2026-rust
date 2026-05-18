@@ -108,7 +108,11 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     let resp = match json::parse(body) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
-                            let count = knn::knn5_ivf(&vec, ds);
+                            let count = tokio::task::spawn_blocking(move || {
+                                knn::knn5_ivf(&vec, ds)
+                            })
+                            .await
+                            .unwrap_or(0);
                             http_body_for(count)
                         }
                         None => RESP_BAD_REQ,
