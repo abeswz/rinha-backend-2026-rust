@@ -17,7 +17,35 @@ pub fn find_header_end(buf: &[u8]) -> Option<usize> {
     memmem::find(buf, b"\r\n\r\n").map(|i| i + 4)
 }
 
-pub fn parse_content_length(header_bytes: &[u8]) -> Option<usize> {
+pub fn parse_content_length(headers: &[u8]) -> Option<usize> {
+    // Fast path: limit memrchr scan to pre-terminator bytes so the \n in \r\n\r\n
+    // is not matched; last_line is taken from the full buffer (parse_digits stops on \r).
+    if let Some(scan_len) = headers.len().checked_sub(4) {
+        let scan = &headers[..scan_len];
+        if let Some(last_nl) = memchr::memrchr(b'\n', scan) {
+            let last_line = &headers[last_nl + 1..];
+            if last_line.len() > 16
+                && last_line[..16].eq_ignore_ascii_case(b"content-length: ")
+            {
+                if let Some(n) = parse_digits(&last_line[16..]) {
+                    return Some(n);
+                }
+            }
+        }
+    }
+    parse_content_length_slow(headers)
+}
+
+fn parse_digits(b: &[u8]) -> Option<usize> {
+    let mut n = 0usize;
+    for &c in b {
+        if !c.is_ascii_digit() { break; }
+        n = n.checked_mul(10)?.checked_add((c - b'0') as usize)?;
+    }
+    Some(n).filter(|&x| x > 0)
+}
+
+fn parse_content_length_slow(header_bytes: &[u8]) -> Option<usize> {
     let mut i = 0;
     while i < header_bytes.len() {
         let line_end = memchr::memchr(b'\n', &header_bytes[i..])
@@ -164,6 +192,18 @@ mod tests {
         assert_eq!(parse_content_length(header), Some(123));
         let header2 = b"POST /x HTTP/1.1\r\nContent-Length: 456\r\n\r\n";
         assert_eq!(parse_content_length(header2), Some(456));
+    }
+
+    #[test]
+    fn parse_content_length_not_last_header_uses_slow_path() {
+        let header = b"POST /x HTTP/1.1\r\nContent-Length: 42\r\nX-Custom: foo\r\n\r\n";
+        assert_eq!(parse_content_length(header), Some(42));
+    }
+
+    #[test]
+    fn parse_content_length_fast_path_when_last() {
+        let header = b"POST /x HTTP/1.1\r\nHost: localhost\r\nContent-Length: 99\r\n\r\n";
+        assert_eq!(parse_content_length(header), Some(99));
     }
 
     #[test]
