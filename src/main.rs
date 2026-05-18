@@ -7,8 +7,17 @@ use tokio::net::UnixListener;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .max_blocking_threads(2)
+        .enable_all()
+        .build()
+        .expect("failed to build runtime")
+        .block_on(run());
+}
+
+async fn run() {
     fraud::data::init();
     fraud::knn::warmup();
 
