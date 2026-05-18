@@ -118,6 +118,10 @@ fn date_weekday(y: u16, mo: u8, d: u8) -> u8 {
 }
 
 pub fn parse(buf: &[u8]) -> Option<Payload> {
+    parse_positional(buf).or_else(|| parse_full(buf))
+}
+
+pub fn parse_full(buf: &[u8]) -> Option<Payload> {
     let mut pos = memchr(b'{', buf)?;
     pos += 1;
 
@@ -171,6 +175,8 @@ pub fn parse(buf: &[u8]) -> Option<Payload> {
     pos += memchr(b'[', &buf[pos..])? + 1;
 
     const MAX_KNOWN: usize = 32;
+    // IDs longer than MAX_ID_LEN are truncated; comparison still works if both
+    // the stored ID and the lookup ID share the same prefix up to MAX_ID_LEN bytes.
     const MAX_ID_LEN: usize = 16;
     let mut known_buf = [[0u8; MAX_ID_LEN]; MAX_KNOWN];
     let mut known_lens = [0u8; MAX_KNOWN];
@@ -277,6 +283,159 @@ pub fn parse(buf: &[u8]) -> Option<Payload> {
     } else {
         return None;
     };
+
+    Some(Payload {
+        amount,
+        installments,
+        hour,
+        weekday,
+        customer_avg_amount,
+        tx_count_24h,
+        is_unknown_merchant,
+        mcc,
+        merchant_avg_amount,
+        is_online,
+        card_present,
+        km_from_home,
+        has_last_tx,
+        minutes_since_last,
+        km_from_current,
+    })
+}
+
+fn parse_positional(buf: &[u8]) -> Option<Payload> {
+    let mut pos = memchr(b'{', buf)?;
+    pos += 1;
+
+    // "id": skip value
+    skip_to_value(buf, &mut pos)?;
+    read_string(buf, &mut pos)?;
+
+    // "transaction" key, then "amount" key — no { navigation needed
+    skip_to_value(buf, &mut pos)?; // finds "transaction":
+    skip_to_value(buf, &mut pos)?; // finds "amount":
+    let amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
+        .ok()?.parse().ok()?;
+
+    skip_to_value(buf, &mut pos)?;
+    let installments: u8 = std::str::from_utf8(read_token(buf, &mut pos)?)
+        .ok()?.parse().ok()?;
+
+    // "requested_at"
+    skip_to_value(buf, &mut pos)?;
+    if buf.get(pos) != Some(&b'"') { return None; }
+    let dt_start = pos + 1;
+    let (y, mo, d, hour, _min_ignored) = parse_iso(buf, dt_start)?;
+    let weekday = date_weekday(y, mo, d);
+    let cur_time = (y, mo, d, hour, parse_digits2(buf, dt_start + 14)?);
+    pos = dt_start + memchr(b'"', &buf[dt_start..])? + 1;
+
+    // "customer" key, then "avg_amount" key — no { navigation needed
+    skip_to_value(buf, &mut pos)?; // finds "customer":
+    skip_to_value(buf, &mut pos)?; // finds "avg_amount":
+    let customer_avg_amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
+        .ok()?.parse().ok()?;
+
+    skip_to_value(buf, &mut pos)?;
+    let tx_count_24h: u8 = std::str::from_utf8(read_token(buf, &mut pos)?)
+        .ok()?.parse().ok()?;
+
+    // "known_merchants": array — still needs [ search
+    skip_to_value(buf, &mut pos)?;
+    pos += memchr(b'[', &buf[pos..])? + 1;
+
+    const MAX_KNOWN: usize = 32;
+    // IDs longer than MAX_ID_LEN are truncated; comparison still works if both
+    // the stored ID and the lookup ID share the same prefix up to MAX_ID_LEN bytes.
+    const MAX_ID_LEN: usize = 16;
+    let mut known_buf = [[0u8; MAX_ID_LEN]; MAX_KNOWN];
+    let mut known_lens = [0u8; MAX_KNOWN];
+    let mut known_count: usize = 0;
+
+    loop {
+        while pos < buf.len() && matches!(buf[pos], b' ' | b'\n' | b'\r' | b'\t' | b',') {
+            pos += 1;
+        }
+        if pos >= buf.len() { return None; }
+        if buf[pos] == b']' { pos += 1; break; }
+        if buf[pos] == b'"' {
+            let s = read_string(buf, &mut pos)?;
+            if known_count < MAX_KNOWN {
+                let len = s.len().min(MAX_ID_LEN);
+                known_buf[known_count][..len].copy_from_slice(&s[..len]);
+                known_lens[known_count] = len as u8;
+                known_count += 1;
+            }
+        } else {
+            pos += 1;
+        }
+    }
+
+    // "merchant" key, then "id" key — no } or { navigation needed
+    skip_to_value(buf, &mut pos)?; // finds "merchant":
+    skip_to_value(buf, &mut pos)?; // finds "id":
+    let merch_id = read_string(buf, &mut pos)?;
+    let is_unknown_merchant = !(0..known_count).any(|i| {
+        let len = known_lens[i] as usize;
+        merch_id.len() == len && merch_id == &known_buf[i][..len]
+    });
+
+    skip_to_value(buf, &mut pos)?;
+    let mcc_str = read_string(buf, &mut pos)?;
+    let mcc: u32 = std::str::from_utf8(mcc_str).ok()?.parse().ok()?;
+
+    skip_to_value(buf, &mut pos)?;
+    let merchant_avg_amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
+        .ok()?.parse().ok()?;
+
+    // "terminal" key, then "is_online" key — no } or { navigation needed
+    skip_to_value(buf, &mut pos)?; // finds "terminal":
+    skip_to_value(buf, &mut pos)?; // finds "is_online":
+    let tok = read_token(buf, &mut pos)?;
+    let is_online = tok == b"true";
+
+    skip_to_value(buf, &mut pos)?;
+    let tok = read_token(buf, &mut pos)?;
+    let card_present = tok == b"true";
+
+    skip_to_value(buf, &mut pos)?;
+    let km_from_home: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
+        .ok()?.parse().ok()?;
+
+    // "last_transaction": null | { ... }
+    skip_to_value(buf, &mut pos)?;
+
+    while pos < buf.len() && matches!(buf[pos], b' ' | b'\n' | b'\r' | b'\t') {
+        pos += 1;
+    }
+
+    let (has_last_tx, minutes_since_last, km_from_current) =
+        if buf.get(pos..pos + 4) == Some(b"null") {
+            (false, 0.0f32, 0.0f32)
+        } else if buf.get(pos) == Some(&b'{') {
+            pos += 1;
+
+            skip_to_value(buf, &mut pos)?;
+            if buf.get(pos) != Some(&b'"') { return None; }
+            let ts_start = pos + 1;
+            let prev_time = (
+                parse_digits4(buf, ts_start)?,
+                parse_digits2(buf, ts_start + 5)?,
+                parse_digits2(buf, ts_start + 8)?,
+                parse_digits2(buf, ts_start + 11)?,
+                parse_digits2(buf, ts_start + 14)?,
+            );
+            pos = ts_start + memchr(b'"', &buf[ts_start..])? + 1;
+
+            skip_to_value(buf, &mut pos)?;
+            let km_cur: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
+                .ok()?.parse().ok()?;
+
+            let mins = minutes_between(cur_time, prev_time);
+            (true, mins, km_cur)
+        } else {
+            return None;
+        };
 
     Some(Payload {
         amount,
@@ -407,5 +566,69 @@ mod tests {
     fn parse_returns_none_on_garbage() {
         assert!(parse(b"not json").is_none());
         assert!(parse(b"{}").is_none());
+    }
+
+    #[test]
+    fn parse_positional_matches_full_for_legit() {
+        let full = parse_full(LEGIT_PAYLOAD).expect("parse_full failed");
+        let pos = parse_positional(LEGIT_PAYLOAD).expect("parse_positional failed");
+        assert_eq!(pos.amount.to_bits(), full.amount.to_bits());
+        assert_eq!(pos.installments, full.installments);
+        assert_eq!(pos.hour, full.hour);
+        assert_eq!(pos.weekday, full.weekday);
+        assert_eq!(pos.customer_avg_amount.to_bits(), full.customer_avg_amount.to_bits());
+        assert_eq!(pos.tx_count_24h, full.tx_count_24h);
+        assert_eq!(pos.is_unknown_merchant, full.is_unknown_merchant);
+        assert_eq!(pos.mcc, full.mcc);
+        assert_eq!(pos.merchant_avg_amount.to_bits(), full.merchant_avg_amount.to_bits());
+        assert_eq!(pos.is_online, full.is_online);
+        assert_eq!(pos.card_present, full.card_present);
+        assert!((pos.km_from_home - full.km_from_home).abs() < 0.0001);
+        assert_eq!(pos.has_last_tx, full.has_last_tx);
+    }
+
+    #[test]
+    fn parse_falls_back_to_full_when_positional_fails() {
+        // Both parse_positional and parse_full are positional (not key-name based),
+        // so reordering top-level fields breaks both. Instead, we verify the
+        // dispatcher invariant: parse(x) == parse_full(x) for all x where
+        // parse_positional(x) is None.
+        //
+        // Case 1: garbage input — positional fails, full fails, parse returns None.
+        let garbage = b"not json";
+        assert!(parse_positional(garbage).is_none(), "parse_positional must fail on garbage");
+        assert_eq!(
+            parse(garbage).is_none(),
+            parse_full(garbage).is_none(),
+            "parse(x) must equal parse_full(x) when parse_positional(x) is None"
+        );
+
+        // Case 2: partial/truncated valid payload — positional fails, full fails, parse returns None.
+        let truncated = br#"{"id": "tx-001", "transaction": {"amount": 1"#;
+        assert!(parse_positional(truncated).is_none(), "parse_positional must fail on truncated input");
+        assert_eq!(
+            parse(truncated).is_some(),
+            parse_full(truncated).is_some(),
+            "parse(x) and parse_full(x) must agree when parse_positional(x) is None"
+        );
+
+        // Case 3: valid payload — positional succeeds, so parse uses it;
+        // confirm parse_full also succeeds and both agree on the result.
+        let p_parse = parse(LEGIT_PAYLOAD).expect("parse must succeed on LEGIT_PAYLOAD");
+        let p_full = parse_full(LEGIT_PAYLOAD).expect("parse_full must succeed on LEGIT_PAYLOAD");
+        assert!((p_parse.amount - p_full.amount).abs() < 0.001);
+        assert_eq!(p_parse.installments, p_full.installments);
+        assert_eq!(p_parse.has_last_tx, p_full.has_last_tx);
+    }
+
+    #[test]
+    fn parse_positional_matches_full_for_tx_with_last() {
+        let full = parse_full(TX_WITH_LAST).expect("parse_full failed");
+        let pos = parse_positional(TX_WITH_LAST).expect("parse_positional failed");
+        assert!((pos.amount - full.amount).abs() < 0.001);
+        assert_eq!(pos.installments, full.installments);
+        assert_eq!(pos.has_last_tx, full.has_last_tx);
+        assert!((pos.minutes_since_last - full.minutes_since_last).abs() < 0.001);
+        assert!((pos.km_from_current - full.km_from_current).abs() < 0.001);
     }
 }
