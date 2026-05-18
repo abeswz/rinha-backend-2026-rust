@@ -1,14 +1,20 @@
 use crate::fraud::data::Dataset;
+use std::cell::UnsafeCell;
 
 pub const FAST_NPROBE: usize = 5;
 pub const FULL_NPROBE: usize = 24;
+const K: usize = 4096; // must match build_index K; guarded by assert in warmup()
+
+thread_local! {
+    static DISTS: UnsafeCell<[f32; K]> = const { UnsafeCell::new([0.0f32; K]) };
+}
 
 pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
     let fast = probe(q, ds, FAST_NPROBE);
-    let fraud_count = fast.iter().filter(|&&l| l == 1).count();
+    let fraud_count = count_fraud(fast);
     if fraud_count == 2 || fraud_count == 3 {
         let full = probe(q, ds, FULL_NPROBE);
-        full.iter().filter(|&&l| l == 1).count() as u8
+        count_fraud(full) as u8
     } else {
         fraud_count as u8
     }
@@ -16,6 +22,7 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
 
 pub fn warmup() {
     let ds = crate::fraud::data::dataset();
+    assert_eq!(ds.k, K, "index k={} != compiled K={K}; rebuild index or update K const", ds.k);
     let mut x = 0x12345678u32;
     for _ in 0..500 {
         x ^= x << 13; x ^= x >> 17; x ^= x << 5;
@@ -27,6 +34,73 @@ pub fn warmup() {
         }
         let _ = knn5_ivf(&q, ds);
     }
+}
+
+#[inline(always)]
+fn count_fraud(labels: [u8; 5]) -> usize {
+    let packed = u64::from_le_bytes([
+        labels[0], labels[1], labels[2], labels[3], labels[4], 0, 0, 0,
+    ]);
+    // labels are 0 or 1; bit 0 of each byte is the value.
+    // mask selects bit 0 of bytes 0-4.
+    (packed & 0x0000_0001_0101_0101).count_ones() as usize
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2,fma")]
+unsafe fn centroid_dists_avx2(q: &[f32; 14], centroids: *const f32, dists: *mut f32) {
+    use std::arch::x86_64::*;
+    // zero accumulator — 512 stores (K=4096, step=8)
+    for i in (0..K).step_by(8) {
+        _mm256_storeu_ps(dists.add(i), _mm256_setzero_ps());
+    }
+    // accumulate squared diffs dimension by dimension
+    #[allow(clippy::needless_range_loop)]
+    for d in 0..14usize {
+        let qd = _mm256_set1_ps(q[d]);
+        let base = d * K;
+        for ci in (0..K).step_by(8) {
+            let v    = _mm256_loadu_ps(centroids.add(base + ci));
+            let diff = _mm256_sub_ps(qd, v);
+            let acc  = _mm256_loadu_ps(dists.add(ci));
+            let acc  = _mm256_fmadd_ps(diff, diff, acc);
+            _mm256_storeu_ps(dists.add(ci), acc);
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn centroid_dists_scalar(q: &[f32; 14], centroids: *const f32, dists: *mut f32) {
+    for i in 0..K {
+        unsafe { *dists.add(i) = 0.0f32; }
+    }
+    #[allow(clippy::needless_range_loop)]
+    for d in 0..14usize {
+        let qd = q[d];
+        let base = d * K;
+        for ci in 0..K {
+            let diff = unsafe { *centroids.add(base + ci) } - qd;
+            unsafe { *dists.add(ci) += diff * diff; }
+        }
+    }
+}
+
+fn top_n_centroids_fast(dists: &[f32; K], nprobe: usize) -> [u16; FULL_NPROBE] {
+    let nprobe = nprobe.min(FULL_NPROBE);
+    let mut top = [(u32::MAX, 0u16); FULL_NPROBE];
+    let mut worst = u32::MAX;
+    for (ci, &d) in dists.iter().enumerate() {
+        let bits = d.to_bits();
+        if bits < worst {
+            let pos = top[..nprobe].partition_point(|&(b, _)| b <= bits);
+            if pos < nprobe {
+                top[pos..nprobe].rotate_right(1);
+                top[pos] = (bits, ci as u16);
+                worst = top[nprobe - 1].0;
+            }
+        }
+    }
+    top.map(|(_, idx)| idx)
 }
 
 fn probe(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
@@ -41,49 +115,30 @@ fn probe(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
 unsafe fn probe_avx2(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
-    let probed = top_n_centroids(q, ds, nprobe);
-    scan_blocks_avx2(q, ds, &probed)
+    let dists_ptr = DISTS.with(|cell| cell.get() as *mut f32);
+    centroid_dists_avx2(q, ds.centroids.as_ptr(), dists_ptr);
+    let dists: &[f32; K] = &*(dists_ptr as *const [f32; K]);
+    let top = top_n_centroids_fast(dists, nprobe);
+    scan_blocks_avx2(q, ds, &top[..nprobe])
 }
 
 #[cfg(not(target_arch = "x86_64"))]
 fn probe_scalar(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
-    let probed = top_n_centroids(q, ds, nprobe);
-    scan_blocks_scalar(q, ds, &probed)
-}
-
-fn top_n_centroids(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> Vec<usize> {
-    let k = ds.k;
-    let cp = ds.centroids.as_ptr();
-    let mut dists = vec![0.0f32; k];
-
-    #[allow(clippy::needless_range_loop)]
-    for d in 0..14usize {
-        let qd = q[d];
-        let base = d * k;
-        #[allow(clippy::needless_range_loop)]
-        for ci in 0..k {
-            let diff = unsafe { *cp.add(base + ci) } - qd;
-            dists[ci] += diff * diff;
-        }
-    }
-
-    let nprobe = nprobe.min(k);
-    let mut indices: Vec<usize> = (0..k).collect();
-    if nprobe < k {
-        indices.select_nth_unstable_by(nprobe - 1, |&a, &b| {
-            dists[a].partial_cmp(&dists[b]).unwrap_or(std::cmp::Ordering::Equal)
-        });
-    }
-    indices[..nprobe].to_vec()
+    let dists_ptr = DISTS.with(|cell| cell.get() as *mut f32);
+    centroid_dists_scalar(q, ds.centroids.as_ptr(), dists_ptr);
+    let dists: &[f32; K] = unsafe { &*(dists_ptr as *const [f32; K]) };
+    let top = top_n_centroids_fast(dists, nprobe);
+    scan_blocks_scalar(q, ds, &top[..nprobe])
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8; 5] {
+fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 5] {
     const K_NEIGHBORS: usize = 5;
     let mut top: [(u32, u8); 5] = [(u32::MAX, 0u8); K_NEIGHBORS];
     let mut worst_bits = u32::MAX;
 
     for &ci in probed {
+        let ci = ci as usize;
         let block_start = ds.offsets[ci] as usize;
         let block_end = ds.offsets[ci + 1] as usize;
 
@@ -127,7 +182,7 @@ fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8; 5] 
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
-unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8; 5] {
+unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 5] {
     use std::arch::x86_64::*;
 
     const K_NEIGHBORS: usize = 5;
@@ -143,6 +198,7 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8
     let lp = ds.labels.as_ptr();
 
     for &ci in probed {
+        let ci = ci as usize;
         let block_start = ds.offsets[ci] as usize;
         let block_end = ds.offsets[ci + 1] as usize;
 
@@ -218,6 +274,26 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[usize]) -> [u8
 mod tests {
     use super::*;
     use crate::fraud::data;
+
+    #[test]
+    fn count_fraud_correct() {
+        assert_eq!(count_fraud([1, 0, 1, 0, 1]), 3);
+        assert_eq!(count_fraud([0, 0, 0, 0, 0]), 0);
+        assert_eq!(count_fraud([1, 1, 1, 1, 1]), 5);
+        assert_eq!(count_fraud([1, 0, 0, 0, 0]), 1);
+    }
+
+    #[test]
+    fn top_n_centroids_fast_smallest_first() {
+        let mut dists = [100.0f32; K];
+        dists[10] = 0.5;
+        dists[7]  = 1.0;
+        dists[42] = 2.0;
+        let top = top_n_centroids_fast(&dists, 3);
+        assert_eq!(top[0], 10u16); // dist=0.5, smallest
+        assert_eq!(top[1], 7u16);  // dist=1.0
+        assert_eq!(top[2], 42u16); // dist=2.0
+    }
 
     #[test]
     fn smoke_warmup_and_query() {
