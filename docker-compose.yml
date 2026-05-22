@@ -15,7 +15,7 @@ services:
       resources:
         limits:
           cpus: "0.05"
-          memory: "5MB"
+          memory: "6MB"
 
   api1:
     build: .
