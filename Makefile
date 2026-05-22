@@ -45,15 +45,13 @@ submission: clean info.json
 	$(MAKE) publish
 	@ORIG=$$(git rev-parse --abbrev-ref HEAD); \
 	sed 's|build: \.|image: $(IMAGE)|' docker-compose.yml > /tmp/sub-compose.yml; \
-	cp nginx.conf /tmp/sub-nginx.conf; \
 	cp info.json /tmp/sub-info.json; \
 	git checkout --orphan submission-tmp; \
 	git rm -rf . > /dev/null 2>&1; \
 	cp /tmp/sub-compose.yml docker-compose.yml; \
-	cp /tmp/sub-nginx.conf nginx.conf; \
 	cp /tmp/sub-info.json info.json; \
-	git add docker-compose.yml nginx.conf info.json; \
-	git commit -m "submission: docker-compose.yml, nginx.conf, info.json"; \
+	git add docker-compose.yml info.json; \
+	git commit -m "submission: docker-compose.yml, info.json"; \
 	git branch -D submission 2>/dev/null || true; \
 	git branch -m submission-tmp submission; \
 	git push origin submission --force; \
