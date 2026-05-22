@@ -22,14 +22,22 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
 
 pub fn warmup() {
     let ds = crate::fraud::data::dataset();
-    assert_eq!(ds.k, K, "index k={} != compiled K={K}; rebuild index or update K const", ds.k);
+    assert_eq!(
+        ds.k, K,
+        "index k={} != compiled K={K}; rebuild index or update K const",
+        ds.k
+    );
     let mut x = 0x12345678u32;
     for _ in 0..500 {
-        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
         let mut q = [0.0f32; 14];
         let mut s = x;
         for v in q.iter_mut() {
-            s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
             *v = (s & 0xFFFF) as f32 / 65535.0;
         }
         let _ = knn5_ivf(&q, ds);
@@ -60,10 +68,10 @@ unsafe fn centroid_dists_avx2(q: &[f32; 14], centroids: *const f32, dists: *mut 
         let qd = _mm256_set1_ps(q[d]);
         let base = d * K;
         for ci in (0..K).step_by(8) {
-            let v    = _mm256_loadu_ps(centroids.add(base + ci));
+            let v = _mm256_loadu_ps(centroids.add(base + ci));
             let diff = _mm256_sub_ps(qd, v);
-            let acc  = _mm256_loadu_ps(dists.add(ci));
-            let acc  = _mm256_fmadd_ps(diff, diff, acc);
+            let acc = _mm256_loadu_ps(dists.add(ci));
+            let acc = _mm256_fmadd_ps(diff, diff, acc);
             _mm256_storeu_ps(dists.add(ci), acc);
         }
     }
@@ -72,7 +80,9 @@ unsafe fn centroid_dists_avx2(q: &[f32; 14], centroids: *const f32, dists: *mut 
 #[allow(dead_code)]
 fn centroid_dists_scalar(q: &[f32; 14], centroids: *const f32, dists: *mut f32) {
     for i in 0..K {
-        unsafe { *dists.add(i) = 0.0f32; }
+        unsafe {
+            *dists.add(i) = 0.0f32;
+        }
     }
     #[allow(clippy::needless_range_loop)]
     for d in 0..14usize {
@@ -80,7 +90,9 @@ fn centroid_dists_scalar(q: &[f32; 14], centroids: *const f32, dists: *mut f32) 
         let base = d * K;
         for ci in 0..K {
             let diff = unsafe { *centroids.add(base + ci) } - qd;
-            unsafe { *dists.add(ci) += diff * diff; }
+            unsafe {
+                *dists.add(ci) += diff * diff;
+            }
         }
     }
 }
@@ -152,7 +164,7 @@ fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 5] {
                 let diff = q[d] - raw * 0.0001;
                 partial += diff * diff;
             }
-            if partial.to_bits() >= worst_bits && top[K_NEIGHBORS-1].0 < u32::MAX {
+            if partial.to_bits() >= worst_bits && top[K_NEIGHBORS - 1].0 < u32::MAX {
                 continue;
             }
 
@@ -170,7 +182,7 @@ fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 5] {
                     if insert_pos < K_NEIGHBORS {
                         top[insert_pos..].rotate_right(1);
                         top[insert_pos] = (bits, label);
-                        worst_bits = top[K_NEIGHBORS-1].0;
+                        worst_bits = top[K_NEIGHBORS - 1].0;
                     }
                 }
             }
@@ -235,9 +247,11 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 
             acc = fmadd_diff!(acc, 6);
             acc = fmadd_diff!(acc, 7);
 
-            if top[K_NEIGHBORS-1].0 < u32::MAX {
+            if top[K_NEIGHBORS - 1].0 < u32::MAX {
                 let cmp = _mm256_cmp_ps::<_CMP_GE_OQ>(acc, threshold);
-                if _mm256_movemask_ps(cmp) == 0xFF { continue 'block; }
+                if _mm256_movemask_ps(cmp) == 0xFF {
+                    continue 'block;
+                }
             }
 
             acc = fmadd_diff!(acc, 8);
@@ -260,7 +274,7 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 
                     if insert_pos < K_NEIGHBORS {
                         top[insert_pos..].rotate_right(1);
                         top[insert_pos] = (bits, label);
-                        worst_bits = top[K_NEIGHBORS-1].0;
+                        worst_bits = top[K_NEIGHBORS - 1].0;
                     }
                 }
             }
@@ -287,11 +301,11 @@ mod tests {
     fn top_n_centroids_fast_smallest_first() {
         let mut dists = [100.0f32; K];
         dists[10] = 0.5;
-        dists[7]  = 1.0;
+        dists[7] = 1.0;
         dists[42] = 2.0;
         let top = top_n_centroids_fast(&dists, 3);
         assert_eq!(top[0], 10u16); // dist=0.5, smallest
-        assert_eq!(top[1], 7u16);  // dist=1.0
+        assert_eq!(top[1], 7u16); // dist=1.0
         assert_eq!(top[2], 42u16); // dist=2.0
     }
 

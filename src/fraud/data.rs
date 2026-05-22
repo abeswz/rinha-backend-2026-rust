@@ -29,8 +29,11 @@ unsafe fn fill_vec<T>(r: &mut impl Read, v: &mut Vec<T>, count: usize) {
     let spare = v.spare_capacity_mut();
     assert!(spare.len() >= count);
     let ptr = spare.as_mut_ptr() as *mut u8;
-    r.read_exact(std::slice::from_raw_parts_mut(ptr, count * std::mem::size_of::<T>()))
-        .expect("truncated index");
+    r.read_exact(std::slice::from_raw_parts_mut(
+        ptr,
+        count * std::mem::size_of::<T>(),
+    ))
+    .expect("truncated index");
     v.set_len(v.len() + count);
 }
 
@@ -38,8 +41,11 @@ unsafe fn fill_vec<T>(r: &mut impl Read, v: &mut Vec<T>, count: usize) {
 unsafe fn fill_avec<T>(r: &mut impl Read, v: &mut AVec<T, ConstAlign<32>>, count: usize) {
     assert!(v.capacity() >= v.len() + count);
     let ptr = v.as_mut_ptr().add(v.len()) as *mut u8;
-    r.read_exact(std::slice::from_raw_parts_mut(ptr, count * std::mem::size_of::<T>()))
-        .expect("truncated index");
+    r.read_exact(std::slice::from_raw_parts_mut(
+        ptr,
+        count * std::mem::size_of::<T>(),
+    ))
+    .expect("truncated index");
     v.set_len(v.len() + count);
 }
 
@@ -57,18 +63,33 @@ fn decode() -> Dataset {
     // All reads go directly into pre-allocated memory. Peak RSS = binary + final arrays only.
     let centroid_count = d * k;
     let mut centroids: AVec<f32, ConstAlign<32>> = AVec::with_capacity(32, centroid_count);
-    unsafe { fill_avec(&mut gz, &mut centroids, centroid_count); }
+    unsafe {
+        fill_avec(&mut gz, &mut centroids, centroid_count);
+    }
 
     let mut offsets: Vec<u32> = Vec::with_capacity(k + 1);
-    unsafe { fill_vec(&mut gz, &mut offsets, k + 1); }
+    unsafe {
+        fill_vec(&mut gz, &mut offsets, k + 1);
+    }
 
     let total_blocks = offsets[k] as usize;
     let mut labels: Vec<u8> = Vec::with_capacity(total_blocks * 8);
-    unsafe { fill_vec(&mut gz, &mut labels, total_blocks * 8); }
+    unsafe {
+        fill_vec(&mut gz, &mut labels, total_blocks * 8);
+    }
 
     let block_i16_count = total_blocks * d * 8;
     let mut blocks: AVec<i16, ConstAlign<32>> = AVec::with_capacity(32, block_i16_count);
-    unsafe { fill_avec(&mut gz, &mut blocks, block_i16_count); }
+    unsafe {
+        fill_avec(&mut gz, &mut blocks, block_i16_count);
+    }
 
-    Dataset { n, k, centroids, offsets, labels, blocks }
+    Dataset {
+        n,
+        k,
+        centroids,
+        offsets,
+        labels,
+        blocks,
+    }
 }

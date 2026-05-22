@@ -62,9 +62,7 @@ mod tests {
 
     #[test]
     fn counter_wraps_correctly() {
-        let val: usize = usize::MAX;
-        assert!(val % 2 == 0 || val % 2 == 1);
-        let wrapped = val.wrapping_add(1);
-        assert!(wrapped % 2 == 0 || wrapped % 2 == 1);
+        assert_eq!(usize::MAX % 2, 1);
+        assert_eq!(usize::MAX.wrapping_add(1) % 2, 0);
     }
 }

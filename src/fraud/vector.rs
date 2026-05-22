@@ -18,7 +18,7 @@ fn mcc_risk(mcc: u32) -> f32 {
         4511 => 0.35,
         5311 => 0.25,
         5999 => 0.50,
-        _    => 0.50,
+        _ => 0.50,
     }
 }
 
@@ -136,7 +136,11 @@ mod tests {
         let mut p = legit_payload();
         p.mcc = 9999;
         let v = vectorize(&p);
-        assert!((v[12] - 0.5).abs() < 0.0001, "unknown mcc should default to 0.5, got {}", v[12]);
+        assert!(
+            (v[12] - 0.5).abs() < 0.0001,
+            "unknown mcc should default to 0.5, got {}",
+            v[12]
+        );
     }
 
     #[test]
