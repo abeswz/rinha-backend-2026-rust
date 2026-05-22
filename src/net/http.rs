@@ -24,9 +24,7 @@ pub fn parse_content_length(headers: &[u8]) -> Option<usize> {
         let scan = &headers[..scan_len];
         if let Some(last_nl) = memchr::memrchr(b'\n', scan) {
             let last_line = &headers[last_nl + 1..];
-            if last_line.len() > 16
-                && last_line[..16].eq_ignore_ascii_case(b"content-length: ")
-            {
+            if last_line.len() > 16 && last_line[..16].eq_ignore_ascii_case(b"content-length: ") {
                 if let Some(n) = parse_digits(&last_line[16..]) {
                     return Some(n);
                 }
@@ -39,7 +37,9 @@ pub fn parse_content_length(headers: &[u8]) -> Option<usize> {
 fn parse_digits(b: &[u8]) -> Option<usize> {
     let mut n = 0usize;
     for &c in b {
-        if !c.is_ascii_digit() { break; }
+        if !c.is_ascii_digit() {
+            break;
+        }
         n = n.checked_mul(10)?.checked_add((c - b'0') as usize)?;
     }
     Some(n).filter(|&x| x > 0)
@@ -136,11 +136,10 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     let resp = match json::parse(body) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
-                            let count = tokio::task::spawn_blocking(move || {
-                                knn::knn5_ivf(&vec, ds)
-                            })
-                            .await
-                            .unwrap_or(0);
+                            let count =
+                                tokio::task::spawn_blocking(move || knn::knn5_ivf(&vec, ds))
+                                    .await
+                                    .unwrap_or(0);
                             http_body_for(count)
                         }
                         None => RESP_BAD_REQ,

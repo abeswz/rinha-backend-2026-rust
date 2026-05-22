@@ -25,7 +25,9 @@ fn skip_to_value(buf: &[u8], pos: &mut usize) -> Option<()> {
     let i = memchr(b':', &buf[*pos..])?;
     *pos += i + 1;
     // skip whitespace
-    while *pos < buf.len() && (buf[*pos] == b' ' || buf[*pos] == b'\n' || buf[*pos] == b'\r' || buf[*pos] == b'\t') {
+    while *pos < buf.len()
+        && (buf[*pos] == b' ' || buf[*pos] == b'\n' || buf[*pos] == b'\r' || buf[*pos] == b'\t')
+    {
         *pos += 1;
     }
     Some(())
@@ -34,7 +36,9 @@ fn skip_to_value(buf: &[u8], pos: &mut usize) -> Option<()> {
 // Reads a quoted string, returns its byte slice, advances pos past closing '"'.
 #[inline(always)]
 fn read_string<'a>(buf: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
-    if buf.get(*pos) != Some(&b'"') { return None; }
+    if buf.get(*pos) != Some(&b'"') {
+        return None;
+    }
     *pos += 1;
     let end = memchr(b'"', &buf[*pos..])?;
     let s = &buf[*pos..*pos + end];
@@ -48,18 +52,29 @@ fn read_token<'a>(buf: &'a [u8], pos: &mut usize) -> Option<&'a [u8]> {
     let start = *pos;
     while *pos < buf.len() {
         let c = buf[*pos];
-        if c == b',' || c == b'}' || c == b']' || c == b' ' || c == b'\n' || c == b'\r' || c == b'\t' {
+        if c == b','
+            || c == b'}'
+            || c == b']'
+            || c == b' '
+            || c == b'\n'
+            || c == b'\r'
+            || c == b'\t'
+        {
             break;
         }
         *pos += 1;
     }
-    if *pos == start { return None; }
+    if *pos == start {
+        return None;
+    }
     Some(&buf[start..*pos])
 }
 
 // Parses "YYYY-MM-DDTHH:MM:SS" from buf[pos..pos+19], returns (y,mo,d,h,min).
 fn parse_iso(buf: &[u8], pos: usize) -> Option<(u16, u8, u8, u8, u8)> {
-    if buf.len() < pos + 19 { return None; }
+    if buf.len() < pos + 19 {
+        return None;
+    }
     let d = &buf[pos..];
     let y = parse_digits4(d, 0)?;
     let mo = parse_digits2(d, 5)?;
@@ -72,16 +87,16 @@ fn parse_iso(buf: &[u8], pos: usize) -> Option<(u16, u8, u8, u8, u8)> {
 #[inline(always)]
 fn parse_digits4(d: &[u8], off: usize) -> Option<u16> {
     let a = (d.get(off)? - b'0') as u16;
-    let b = (d.get(off+1)? - b'0') as u16;
-    let c = (d.get(off+2)? - b'0') as u16;
-    let e = (d.get(off+3)? - b'0') as u16;
-    Some(a*1000 + b*100 + c*10 + e)
+    let b = (d.get(off + 1)? - b'0') as u16;
+    let c = (d.get(off + 2)? - b'0') as u16;
+    let e = (d.get(off + 3)? - b'0') as u16;
+    Some(a * 1000 + b * 100 + c * 10 + e)
 }
 
 #[inline(always)]
 fn parse_digits2(d: &[u8], off: usize) -> Option<u8> {
     let a = d.get(off)? - b'0';
-    let b = d.get(off+1)? - b'0';
+    let b = d.get(off + 1)? - b'0';
     Some(a * 10 + b)
 }
 
@@ -93,15 +108,11 @@ fn days_since_epoch(y: u16, mo: u8, d: u8) -> u32 {
     };
     let a = y / 100;
     let b = 2 - a + a / 4;
-    ((365.25 * (y + 4716) as f64) as i32
-        + (30.6001 * (m + 1) as f64) as i32
-        + d as i32 + b - 1524) as u32
+    ((365.25 * (y + 4716) as f64) as i32 + (30.6001 * (m + 1) as f64) as i32 + d as i32 + b - 1524)
+        as u32
 }
 
-fn minutes_between(
-    cur: (u16, u8, u8, u8, u8),
-    prev: (u16, u8, u8, u8, u8),
-) -> f32 {
+fn minutes_between(cur: (u16, u8, u8, u8, u8), prev: (u16, u8, u8, u8, u8)) -> f32 {
     let dc = days_since_epoch(cur.0, cur.1, cur.2) as i64;
     let dp = days_since_epoch(prev.0, prev.1, prev.2) as i64;
     let mc = cur.3 as i64 * 60 + cur.4 as i64;
@@ -112,8 +123,11 @@ fn minutes_between(
 fn date_weekday(y: u16, mo: u8, d: u8) -> u8 {
     let t = [0u8, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
     let y = if mo < 3 { y - 1 } else { y };
-    let dow_sun0 = (y as u32 + y as u32/4 - y as u32/100 + y as u32/400
-        + t[(mo-1) as usize] as u32 + d as u32) % 7;
+    let dow_sun0 = (y as u32 + y as u32 / 4 - y as u32 / 100
+        + y as u32 / 400
+        + t[(mo - 1) as usize] as u32
+        + d as u32)
+        % 7;
     ((dow_sun0 + 6) % 7) as u8
 }
 
@@ -136,22 +150,26 @@ pub fn parse_full(buf: &[u8]) -> Option<Payload> {
     // "amount":
     skip_to_value(buf, &mut pos)?;
     let amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "installments":
     skip_to_value(buf, &mut pos)?;
     let installments: u8 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "requested_at": "YYYY-MM-DDTHH:MM:SSZ"
     skip_to_value(buf, &mut pos)?;
-    if buf.get(pos) != Some(&b'"') { return None; }
+    if buf.get(pos) != Some(&b'"') {
+        return None;
+    }
     let dt_start = pos + 1;
     let (y, mo, d, hour, _min_ignored) = parse_iso(buf, dt_start)?;
     let weekday = date_weekday(y, mo, d);
-    let cur_time = (y, mo, d, hour, {
-        parse_digits2(buf, dt_start + 14)?
-    });
+    let cur_time = (y, mo, d, hour, { parse_digits2(buf, dt_start + 14)? });
     pos = dt_start + memchr(b'"', &buf[dt_start..])? + 1;
 
     pos += memchr(b'}', &buf[pos..])? + 1;
@@ -163,12 +181,16 @@ pub fn parse_full(buf: &[u8]) -> Option<Payload> {
     // "avg_amount":
     skip_to_value(buf, &mut pos)?;
     let customer_avg_amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "tx_count_24h":
     skip_to_value(buf, &mut pos)?;
     let tx_count_24h: u8 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "known_merchants": [ ... ]
     skip_to_value(buf, &mut pos)?;
@@ -186,8 +208,13 @@ pub fn parse_full(buf: &[u8]) -> Option<Payload> {
         while pos < buf.len() && matches!(buf[pos], b' ' | b'\n' | b'\r' | b'\t' | b',') {
             pos += 1;
         }
-        if pos >= buf.len() { return None; }
-        if buf[pos] == b']' { pos += 1; break; }
+        if pos >= buf.len() {
+            return None;
+        }
+        if buf[pos] == b']' {
+            pos += 1;
+            break;
+        }
         if buf[pos] == b'"' {
             let s = read_string(buf, &mut pos)?;
             if known_count < MAX_KNOWN {
@@ -223,7 +250,9 @@ pub fn parse_full(buf: &[u8]) -> Option<Payload> {
     // "avg_amount":
     skip_to_value(buf, &mut pos)?;
     let merchant_avg_amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     pos += memchr(b'}', &buf[pos..])? + 1;
 
@@ -244,7 +273,9 @@ pub fn parse_full(buf: &[u8]) -> Option<Payload> {
     // "km_from_home":
     skip_to_value(buf, &mut pos)?;
     let km_from_home: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     pos += memchr(b'}', &buf[pos..])? + 1;
 
@@ -255,34 +286,39 @@ pub fn parse_full(buf: &[u8]) -> Option<Payload> {
         pos += 1;
     }
 
-    let (has_last_tx, minutes_since_last, km_from_current) = if buf.get(pos..pos+4) == Some(b"null") {
-        (false, 0.0f32, 0.0f32)
-    } else if buf.get(pos) == Some(&b'{') {
-        pos += 1;
+    let (has_last_tx, minutes_since_last, km_from_current) =
+        if buf.get(pos..pos + 4) == Some(b"null") {
+            (false, 0.0f32, 0.0f32)
+        } else if buf.get(pos) == Some(&b'{') {
+            pos += 1;
 
-        // "timestamp":
-        skip_to_value(buf, &mut pos)?;
-        if buf.get(pos) != Some(&b'"') { return None; }
-        let ts_start = pos + 1;
-        let prev_time = (
-            parse_digits4(buf, ts_start)?,
-            parse_digits2(buf, ts_start + 5)?,
-            parse_digits2(buf, ts_start + 8)?,
-            parse_digits2(buf, ts_start + 11)?,
-            parse_digits2(buf, ts_start + 14)?,
-        );
-        pos = ts_start + memchr(b'"', &buf[ts_start..])? + 1;
+            // "timestamp":
+            skip_to_value(buf, &mut pos)?;
+            if buf.get(pos) != Some(&b'"') {
+                return None;
+            }
+            let ts_start = pos + 1;
+            let prev_time = (
+                parse_digits4(buf, ts_start)?,
+                parse_digits2(buf, ts_start + 5)?,
+                parse_digits2(buf, ts_start + 8)?,
+                parse_digits2(buf, ts_start + 11)?,
+                parse_digits2(buf, ts_start + 14)?,
+            );
+            pos = ts_start + memchr(b'"', &buf[ts_start..])? + 1;
 
-        // "km_from_current":
-        skip_to_value(buf, &mut pos)?;
-        let km_cur: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-            .ok()?.parse().ok()?;
+            // "km_from_current":
+            skip_to_value(buf, &mut pos)?;
+            let km_cur: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
+                .ok()?
+                .parse()
+                .ok()?;
 
-        let mins = minutes_between(cur_time, prev_time);
-        (true, mins, km_cur)
-    } else {
-        return None;
-    };
+            let mins = minutes_between(cur_time, prev_time);
+            (true, mins, km_cur)
+        } else {
+            return None;
+        };
 
     Some(Payload {
         amount,
@@ -315,15 +351,21 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
     skip_to_value(buf, &mut pos)?; // finds "transaction":
     skip_to_value(buf, &mut pos)?; // finds "amount":
     let amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     skip_to_value(buf, &mut pos)?;
     let installments: u8 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "requested_at"
     skip_to_value(buf, &mut pos)?;
-    if buf.get(pos) != Some(&b'"') { return None; }
+    if buf.get(pos) != Some(&b'"') {
+        return None;
+    }
     let dt_start = pos + 1;
     let (y, mo, d, hour, _min_ignored) = parse_iso(buf, dt_start)?;
     let weekday = date_weekday(y, mo, d);
@@ -334,11 +376,15 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
     skip_to_value(buf, &mut pos)?; // finds "customer":
     skip_to_value(buf, &mut pos)?; // finds "avg_amount":
     let customer_avg_amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     skip_to_value(buf, &mut pos)?;
     let tx_count_24h: u8 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "known_merchants": array — still needs [ search
     skip_to_value(buf, &mut pos)?;
@@ -356,8 +402,13 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
         while pos < buf.len() && matches!(buf[pos], b' ' | b'\n' | b'\r' | b'\t' | b',') {
             pos += 1;
         }
-        if pos >= buf.len() { return None; }
-        if buf[pos] == b']' { pos += 1; break; }
+        if pos >= buf.len() {
+            return None;
+        }
+        if buf[pos] == b']' {
+            pos += 1;
+            break;
+        }
         if buf[pos] == b'"' {
             let s = read_string(buf, &mut pos)?;
             if known_count < MAX_KNOWN {
@@ -386,7 +437,9 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
 
     skip_to_value(buf, &mut pos)?;
     let merchant_avg_amount: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "terminal" key, then "is_online" key — no } or { navigation needed
     skip_to_value(buf, &mut pos)?; // finds "terminal":
@@ -400,7 +453,9 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
 
     skip_to_value(buf, &mut pos)?;
     let km_from_home: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-        .ok()?.parse().ok()?;
+        .ok()?
+        .parse()
+        .ok()?;
 
     // "last_transaction": null | { ... }
     skip_to_value(buf, &mut pos)?;
@@ -416,7 +471,9 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
             pos += 1;
 
             skip_to_value(buf, &mut pos)?;
-            if buf.get(pos) != Some(&b'"') { return None; }
+            if buf.get(pos) != Some(&b'"') {
+                return None;
+            }
             let ts_start = pos + 1;
             let prev_time = (
                 parse_digits4(buf, ts_start)?,
@@ -429,7 +486,9 @@ fn parse_positional(buf: &[u8]) -> Option<Payload> {
 
             skip_to_value(buf, &mut pos)?;
             let km_cur: f32 = std::str::from_utf8(read_token(buf, &mut pos)?)
-                .ok()?.parse().ok()?;
+                .ok()?
+                .parse()
+                .ok()?;
 
             let mins = minutes_between(cur_time, prev_time);
             (true, mins, km_cur)
@@ -576,11 +635,17 @@ mod tests {
         assert_eq!(pos.installments, full.installments);
         assert_eq!(pos.hour, full.hour);
         assert_eq!(pos.weekday, full.weekday);
-        assert_eq!(pos.customer_avg_amount.to_bits(), full.customer_avg_amount.to_bits());
+        assert_eq!(
+            pos.customer_avg_amount.to_bits(),
+            full.customer_avg_amount.to_bits()
+        );
         assert_eq!(pos.tx_count_24h, full.tx_count_24h);
         assert_eq!(pos.is_unknown_merchant, full.is_unknown_merchant);
         assert_eq!(pos.mcc, full.mcc);
-        assert_eq!(pos.merchant_avg_amount.to_bits(), full.merchant_avg_amount.to_bits());
+        assert_eq!(
+            pos.merchant_avg_amount.to_bits(),
+            full.merchant_avg_amount.to_bits()
+        );
         assert_eq!(pos.is_online, full.is_online);
         assert_eq!(pos.card_present, full.card_present);
         assert!((pos.km_from_home - full.km_from_home).abs() < 0.0001);
@@ -596,7 +661,10 @@ mod tests {
         //
         // Case 1: garbage input — positional fails, full fails, parse returns None.
         let garbage = b"not json";
-        assert!(parse_positional(garbage).is_none(), "parse_positional must fail on garbage");
+        assert!(
+            parse_positional(garbage).is_none(),
+            "parse_positional must fail on garbage"
+        );
         assert_eq!(
             parse(garbage).is_none(),
             parse_full(garbage).is_none(),
@@ -605,7 +673,10 @@ mod tests {
 
         // Case 2: partial/truncated valid payload — positional fails, full fails, parse returns None.
         let truncated = br#"{"id": "tx-001", "transaction": {"amount": 1"#;
-        assert!(parse_positional(truncated).is_none(), "parse_positional must fail on truncated input");
+        assert!(
+            parse_positional(truncated).is_none(),
+            "parse_positional must fail on truncated input"
+        );
         assert_eq!(
             parse(truncated).is_some(),
             parse_full(truncated).is_some(),

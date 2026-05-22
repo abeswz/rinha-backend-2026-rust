@@ -16,11 +16,16 @@ struct Reference {
     label: String,
 }
 
-fn round4(x: f32) -> f32 { (x * 10000.0).round() * 0.0001 }
+fn round4(x: f32) -> f32 {
+    (x * 10000.0).round() * 0.0001
+}
 
 fn sq_dist(a: &[f32; D], b: &[f32; D]) -> f32 {
     let mut s = 0.0f32;
-    for i in 0..D { let d = a[i] - b[i]; s += d * d; }
+    for i in 0..D {
+        let d = a[i] - b[i];
+        s += d * d;
+    }
     s
 }
 
@@ -29,7 +34,10 @@ fn nearest_centroid(v: &[f32; D], centroids: &[[f32; D]]) -> usize {
     let mut best_d = f32::INFINITY;
     for (i, c) in centroids.iter().enumerate() {
         let d = sq_dist(v, c);
-        if d < best_d { best_d = d; best = i; }
+        if d < best_d {
+            best_d = d;
+            best = i;
+        }
     }
     best
 }
@@ -41,7 +49,9 @@ fn kmeans_plus_plus_init(vecs: &[[f32; D]], k: usize, sample_n: usize) -> Vec<[f
 
     let mut rng = 0xdeadbeef_u64;
     let lcg = |r: &mut u64| -> usize {
-        *r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *r = r
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (*r >> 33) as usize
     };
 
@@ -54,14 +64,19 @@ fn kmeans_plus_plus_init(vecs: &[[f32; D]], k: usize, sample_n: usize) -> Vec<[f
         let last = centers.last().unwrap();
         for (i, v) in sample.iter().enumerate() {
             let d = sq_dist(v, last);
-            if d < dists[i] { dists[i] = d; }
+            if d < dists[i] {
+                dists[i] = d;
+            }
         }
         let total: f32 = dists.iter().sum();
         let mut threshold = (lcg(&mut rng) as f32 / u32::MAX as f32) * total;
         let mut chosen = n - 1;
         for (i, &d) in dists.iter().enumerate() {
             threshold -= d;
-            if threshold <= 0.0 { chosen = i; break; }
+            if threshold <= 0.0 {
+                chosen = i;
+                break;
+            }
         }
         centers.push(*sample[chosen]);
     }
@@ -91,7 +106,9 @@ fn lloyd_assign(vecs: &[[f32; D]], centroids: &[[f32; D]]) -> Vec<usize> {
                 }
             }));
         }
-        for h in handles { h.join().unwrap(); }
+        for h in handles {
+            h.join().unwrap();
+        }
     });
 
     assignments
@@ -101,12 +118,16 @@ fn lloyd_update(vecs: &[[f32; D]], assignments: &[usize], k: usize) -> Vec<[f32;
     let mut sums = vec![[0.0f32; D]; k];
     let mut counts = vec![0u64; k];
     for (v, &ci) in vecs.iter().zip(assignments.iter()) {
-        for d in 0..D { sums[ci][d] += v[d]; }
+        for d in 0..D {
+            sums[ci][d] += v[d];
+        }
         counts[ci] += 1;
     }
     for (ci, sum) in sums.iter_mut().enumerate() {
         let c = counts[ci].max(1) as f32;
-        for val in sum.iter_mut().take(D) { *val /= c; }
+        for val in sum.iter_mut().take(D) {
+            *val /= c;
+        }
     }
     sums
 }
@@ -135,7 +156,11 @@ fn write_ivf1(
         for b in 0..nblocks {
             for slot in 0..8usize {
                 let vec_idx = b * 8 + slot;
-                let label = if vec_idx < g.len() { labels[g[vec_idx]] } else { 0 };
+                let label = if vec_idx < g.len() {
+                    labels[g[vec_idx]]
+                } else {
+                    0
+                };
                 label_buf.push(label);
             }
             #[allow(clippy::needless_range_loop)]
@@ -172,10 +197,18 @@ fn write_ivf1(
     w.write_all(&n.to_le_bytes()).unwrap();
     w.write_all(&(k as u32).to_le_bytes()).unwrap();
     w.write_all(&(D as u32).to_le_bytes()).unwrap();
-    for &f in &centroid_buf { w.write_all(&f.to_le_bytes()).unwrap(); }
-    for &o in &offsets { w.write_all(&o.to_le_bytes()).unwrap(); }
-    for &l in &label_buf { w.write_all(&[l]).unwrap(); }
-    for &b in &block_buf { w.write_all(&b.to_le_bytes()).unwrap(); }
+    for &f in &centroid_buf {
+        w.write_all(&f.to_le_bytes()).unwrap();
+    }
+    for &o in &offsets {
+        w.write_all(&o.to_le_bytes()).unwrap();
+    }
+    for &l in &label_buf {
+        w.write_all(&[l]).unwrap();
+    }
+    for &b in &block_buf {
+        w.write_all(&b.to_le_bytes()).unwrap();
+    }
     w.flush().unwrap();
 
     println!("IVF1 written to {out_path}: n={n}, k={k}, blocks={block_idx}");
@@ -188,18 +221,27 @@ fn main() {
     eprintln!("reading {in_path}...");
     let file = File::open(in_path).expect("cannot open references.json.gz");
     let gz = GzDecoder::new(BufReader::new(file));
-    let refs: Vec<Reference> = serde_json::from_reader(gz).expect("failed to parse references JSON");
+    let refs: Vec<Reference> =
+        serde_json::from_reader(gz).expect("failed to parse references JSON");
 
     let n = refs.len();
     eprintln!("loaded {n} reference vectors");
 
-    let vecs: Vec<[f32; D]> = refs.iter().map(|r| {
-        let mut v = r.vector;
-        for x in v.iter_mut() { *x = round4(*x); }
-        v
-    }).collect();
+    let vecs: Vec<[f32; D]> = refs
+        .iter()
+        .map(|r| {
+            let mut v = r.vector;
+            for x in v.iter_mut() {
+                *x = round4(*x);
+            }
+            v
+        })
+        .collect();
 
-    let labels: Vec<u8> = refs.iter().map(|r| if r.label == "fraud" { 1u8 } else { 0u8 }).collect();
+    let labels: Vec<u8> = refs
+        .iter()
+        .map(|r| if r.label == "fraud" { 1u8 } else { 0u8 })
+        .collect();
 
     eprintln!("running kmeans++ init (K={K}, sample={INIT_SAMPLE})...");
     let mut centroids = kmeans_plus_plus_init(&vecs, K, INIT_SAMPLE);
