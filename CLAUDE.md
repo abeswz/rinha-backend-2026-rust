@@ -2,6 +2,9 @@
 
 High-performance fraud detection API in Rust. Minimal allocations, sub-millisecond p99.
 
+> **Manutenção obrigatória:** Após cada teste remoto ou mudança arquitetural relevante, atualizar `PROGRESS.md`.
+> Esse arquivo é o recap rápido do estado do projeto — mantê-lo atualizado evita ter que reconstruir contexto do zero.
+
 ---
 
 ## Stack

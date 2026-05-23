@@ -1,166 +1,148 @@
 # Fraud Detection API
 
-API de detecção de fraude em tempo real construída em Rust. Recebe uma transação, compara contra 3 milhões de vetores de referência e retorna uma pontuação de risco com decisão de aprovação.
+API de detecção de fraude em tempo real em Rust. Recebe uma transação, compara contra 3 milhões de vetores de referência e retorna uma pontuação de risco com decisão de aprovação.
 
 ---
 
 ## Arquitetura
 
-```mermaid
-flowchart TD
-    Client -->|HTTP| nginx["nginx : 9999\nleast_conn"]
-
-    nginx --> api1["api1 : 3000"]
-    nginx --> api2["api2 : 3000"]
-
-    api1 & api2 --> sb(["spawn_blocking"])
-
-    sb --> s1["knn_adaptive — Stage 1\nnprobe = 5"]
-
-    s1 -->|"votos ≤ 1\nlegítimo claro"| ret1(["return ✓"])
-    s1 -->|"votos ≥ 4\nfraude clara"| ret2(["return ✗"])
-    s1 -->|"votos 2–3\nambíguo"| s2["Stage 2\nnprobe = 24"]
-
-    s2 --> ret3(["return"])
 ```
+Client (HTTP :9999)
+    └── Rust TCP LB  (bin/lb.rs, 0.05 vCPU)
+            ├── api1 (Unix socket /run/sock/api1.sock)
+            └── api2 (Unix socket /run/sock/api2.sock)
+
+Por request (cada instância):
+    JSON → vetorize → model::predict(q)
+                           │
+                   p ≤ 0.20│ Legit      → approved:true  (~0.7µs, inline)
+                           │ else       → spawn_blocking → IVF KNN → score → response
+```
+
+**Sem Axum. Sem nginx. Sem framework HTTP.** Parser HTTP/1.1 custom com keep-alive. Respostas são `&[u8]` estáticos pré-baked (6 níveis).
 
 ---
 
-## Como funciona
+## Pipeline de fraude
 
-### Visão geral
+### 1. Vetorização
 
-O sistema usa **IVF KNN** (Inverted File Index + K-Nearest Neighbors) para classificar transações:
-
-1. A transação chega como JSON
-2. É convertida num vetor de 14 dimensões
-3. As 5 transações mais próximas são buscadas via busca adaptativa em dois estágios
-4. A proporção de fraudes entre as 5 vizinhas vira o `fraud_score`
-5. Se `fraud_score >= 0.6`, a transação é negada
-
-### Busca adaptativa (dois estágios)
-
-Em vez de sempre sondar `N` clusters, a busca usa dois estágios:
-
-| Estágio | nprobe | Quando retorna |
-|---------|--------|----------------|
-| Rápido  | 5      | votos ≤ 1 (claramente legítimo) ou votos ≥ 4 (claramente fraude) |
-| Lento   | 24     | casos ambíguos (2–3 votos de fraude em 5) |
-
-A maioria das requisições retorna no estágio rápido (nprobe=5 ≈ 0,3% dos clusters). Apenas os casos ambíguos sobem para o estágio lento (nprobe=24 ≈ 1,4% dos clusters), melhorando acurácia sem penalizar latência no caso médio.
-
-### O vetor de 14 dimensões
+A transação JSON é convertida num vetor de 14 dimensões:
 
 | Dim | Descrição | Fórmula |
 |-----|-----------|---------|
-| 0 | Valor da transação | `amount / 10000` |
-| 1 | Número de parcelas | `installments / 12` |
-| 2 | Razão valor vs. média do cliente | `(amount / avg_amount) / 10` |
+| 0 | Valor | `amount / 10000` |
+| 1 | Parcelas | `installments / 12` |
+| 2 | Razão valor/média cliente | `(amount / avg_amount) / 10` |
 | 3 | Hora do dia | `hour / 23` |
 | 4 | Dia da semana | `weekday / 6` |
-| 5 | Minutos desde última transação | `minutes / 1440` ou `-1.0` se ausente |
-| 6 | Distância da última transação (km) | `km / 1000` ou `-1.0` se ausente |
+| 5 | Minutos desde última tx | `minutes / 1440` ou `-1.0` se ausente |
+| 6 | Distância da última tx (km) | `km / 1000` ou `-1.0` se ausente |
 | 7 | Distância de casa (km) | `km_from_home / 1000` |
 | 8 | Transações nas últimas 24h | `tx_count_24h / 20` |
-| 9 | Terminal online | `1.0` se online, `0.0` se não |
-| 10 | Cartão presente | `1.0` se presente, `0.0` se não |
-| 11 | Comerciante desconhecido | `1.0` se novo, `0.0` se conhecido |
-| 12 | Risco do MCC | Mapa fixo por categoria |
+| 9 | Terminal online | `1.0` / `0.0` |
+| 10 | Cartão presente | `1.0` / `0.0` |
+| 11 | Comerciante desconhecido | `1.0` / `0.0` |
+| 12 | Risco do MCC | mapa fixo por categoria |
 | 13 | Ticket médio do comerciante | `merchant_avg_amount / 10000` |
 
-### Risco por MCC
+### 2. Modelo LightGBM (fast-path Legit)
 
-| MCC | Categoria | Risco |
-|-----|-----------|-------|
-| 5411 | Supermercados | 0.15 |
-| 5812 | Restaurantes | 0.30 |
-| 5912 | Farmácias | 0.20 |
-| 5944 | Joalherias | 0.45 |
-| 7801 | Loteria / apostas | 0.80 |
-| 7802 | Corridas de cavalo | 0.75 |
-| 7995 | Cassinos / jogos | 0.85 |
-| 4511 | Companhias aéreas | 0.35 |
-| 5311 | Lojas de departamento | 0.25 |
-| 5999 / Outros | — | 0.50 |
+`src/fraud/model_gen.rs` — código Rust gerado por m2cgen a partir de LightGBM treinado nos 3M vetores de referência. 1.65MB, 19.581 branches, ~0.7µs por chamada.
 
-### Índice IVF
+- `p ≤ 0.20` → Legit → resposta imediata (sem IVF)
+- `p > 0.20` → IVF
 
-Os 3 milhões de vetores são agrupados em **K=4096 clusters** via MiniBatchKMeans. Armazenado em `resources/ivf_index.bin` em formato IVF2 com quantização `i16` (×10000, ~84MB). O índice é carregado inteiro no startup — nenhuma I/O por requisição.
+### 3. IVF KNN (busca adaptativa)
 
-Layout flat column-major: centroides f32 coluna-major, blocos de 8 vetores i16 com layout dim-major. A busca usa SIMD (AVX2+FMA) para scan de centroides e blocos, com terminação antecipada após 8 de 14 dimensões quando o heap já está cheio. Seleção de clusters via `select_nth_unstable` (O(K) vs O(K log K)).
+`src/fraud/knn.rs` — índice IVF2 i16 com K=4096 clusters. Busca em dois estágios:
 
-### Runtime
+| Estágio | nprobe | Quando retorna |
+|---------|--------|----------------|
+| Rápido  | 5      | votos ≤ 1 ou ≥ 4 |
+| Lento   | 24     | ambíguo (2–3 votos) |
 
-- **2 worker threads** Tokio: accept/parse/serialize
-- **8 blocking threads**: buscas IVF paralelas via `spawn_blocking`
-- **mimalloc**: alocador global de alta performance
-- **500 queries de warmup** no startup para primar caches de CPU
+Top-5 vizinhos → conta labels fraud → score 0–5 → resposta estática.
+
+| Score | approved | fraud_score |
+|-------|----------|-------------|
+| 0–2   | true     | 0.0–0.4     |
+| 3–5   | false    | 0.6–1.0     |
+
+Scan de centroides com AVX2+FMA. POPCNT para contagem de labels.
 
 ---
 
-## Estrutura do projeto
+## Estrutura
 
 ```
 src/
-  lib.rs              # AppState, módulos públicos
-  main.rs             # Binário (runtime Tokio + mimalloc)
-  config.rs           # Config via variáveis de ambiente
-  domain/
-    transaction.rs    # Transaction, Customer, Merchant...
-    fraud.rs          # FraudDecision
-  service/
-    vectorizer.rs     # Transaction → [f32; 14]
-  repository/
-    ivf.rs            # IvfIndex: knn() + knn_adaptive()
-    reference.rs      # ReferenceRepository
-  usecase/
-    score_fraud.rs    # Vetoriza → knn_adaptive → decisão
-  web/
-    dto.rs            # DTOs request/response
-    handlers.rs       # Axum handlers (spawn_blocking)
-    router.rs         # GET /ready, POST /fraud-score
+  main.rs           # Runtime Tokio (2 worker + 2 blocking threads), Unix socket
+  env.rs            # SOCK env var
+  fraud/
+    mod.rs
+    data.rs         # Carrega referencias.json.gz + ivf_index.bin no startup
+    json.rs         # Parser JSON posicional zero-alloc
+    vector.rs       # Transaction → [f32; 14]
+    model.rs        # predict() — thresholds LOW/HIGH
+    model_gen.rs    # Gerado: m2cgen LightGBM if-else chains
+    knn.rs          # IVF KNN adaptativo AVX2
+  net/
+    mod.rs
+    http.rs         # Parser HTTP/1.1 + roteador + handler
+    response.rs     # Respostas estáticas pré-baked
+
+bin/
+  lb.rs             # Load balancer TCP round-robin
+  build_index.rs    # Constrói ivf_index.bin
+
 tools/
-  build_ivf.py        # Gera ivf_index.bin (MiniBatchKMeans K=4096, IVF2 i16)
+  train_model.py    # Treina LightGBM + exporta model_gen.rs via m2cgen
+  build_ivf.py      # Constrói ivf_index.bin (MiniBatchKMeans K=4096)
+
 resources/
-  ivf_index.bin       # Índice IVF2 i16 K=4096 (~84MB) — gerado, não versionado
-  mcc_risk.json       # Risco por MCC
-  normalization.json  # Constantes de normalização
+  references.json.gz   # 3M vetores de referência com labels
+  ivf_index.bin        # Índice IVF2 i16 K=4096 (~84MB)
+  model.onnx           # Modelo ONNX (não usado em runtime — referência)
+  normalization.json   # Constantes de normalização
+  mcc_risk.json        # Risco por MCC
 ```
 
 ---
 
-## Como usar
+## Restrições de recursos
 
-### Makefile
+| Serviço | CPU     | RAM   |
+|---------|---------|-------|
+| api1    | 0.475   | 172MB |
+| api2    | 0.475   | 172MB |
+| lb      | 0.05    | 6MB   |
+| **Total** | **1.0** | **350MB** |
 
-| Comando | O que faz |
-|---------|-----------|
-| `make up` | Build da imagem + `docker compose up -d` + aguarda `/ready` |
-| `make down` | Para o docker compose |
-| `make dev` | Roda instância local na porta 9999 (sem Docker) |
-| `make smoke` | Smoke test k6 (5 requests) |
-| `make load` | Load test k6 (54k transações, 120s) |
-| `make publish` | Build + push da imagem para GHCR |
-| `make submission` | Cria branch `submission` com 3 arquivos, força push |
+---
 
-### Fluxo Docker
+## Comandos
 
 ```bash
-make up      # build + nginx:9999 → api1+api2
-make smoke   # valida resposta
-make load    # load test completo
-make down
+make bench      # docker up + k6 load test + score
+make score      # exibe score do último results.json
+make smoke      # smoke test (5 requests)
+make publish    # build + push imagem para GHCR
+make submission # build + force-push branch submission
+
+cargo test      # testes unitários (34)
+cargo clippy --all-targets --all-features -- -D warnings
+cargo build --release
+
+# Re-treinar modelo (Python, requer uv)
+uv run tools/train_model.py
 ```
 
 ### Variáveis de ambiente
 
 | Variável | Padrão | Descrição |
 |----------|--------|-----------|
-| `PORT` | `3000` | Porta HTTP |
-| `IVF_PATH` | `resources/ivf_index.bin` | Índice IVF |
-| `IVF_NPROBE` | `24` | nprobe do estágio lento (deve ser ≥ 5) |
-| `MCC_PATH` | `resources/mcc_risk.json` | Mapa de risco MCC |
-| `NORM_PATH` | `resources/normalization.json` | Constantes de normalização |
+| `SOCK`   | `/tmp/fraud-api.sock` | Caminho do Unix socket |
 
 ---
 
@@ -168,7 +150,7 @@ make down
 
 ### `GET /ready`
 
-Health check. Retorna `200 OK` com body `ok`.
+Health check. Retorna `200 OK` com body `OK`.
 
 ### `POST /fraud-score`
 
@@ -184,30 +166,21 @@ Health check. Retorna `200 OK` com body `ok`.
 }
 ```
 
+`last_transaction` pode ser `null` — dims 5 e 6 recebem `-1.0` como sentinela.
+
 **Response:**
 ```json
 { "approved": true, "fraud_score": 0.2 }
 ```
 
-`last_transaction` pode ser `null` — dimensões 5 e 6 recebem `-1.0` como sentinela.
-
 ---
 
-## Testes
+## Performance
 
-```bash
-cargo test                    # todos os testes
-cargo test --test integration # integração (requer ivf_index.bin)
-cargo test --test regression  # regressão (requer ivf_index.bin)
+Ver `PROGRESS.md` para histórico completo de testes remotos e evolução arquitetural.
+
+Resultados locais (máquina dev, sem limites de container):
+
 ```
-
----
-
-## Restrições de recursos (por instância)
-
-| Recurso | Limite |
-|---------|--------|
-| CPU | 0.475 vCPU |
-| RAM | 170 MB |
-| nginx | 0.05 vCPU / 10 MB |
-| **Total** | **1 CPU / 350 MB** |
+p99: 0.23ms | final_score: 6000/6000 | FP: 0 | FN: 0
+```
