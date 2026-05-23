@@ -9,7 +9,7 @@
 
 **Branch principal:** `main`  
 **Última atualização:** 2026-05-23  
-**Arquitetura ativa:** Legit fast-path (m2cgen) + IVF fallback
+**Arquitetura ativa:** Legit fast-path (m2cgen) + IVF fallback + observabilidade runtime
 
 ### Pipeline por request
 
@@ -45,6 +45,32 @@ p99: 0.23ms | final_score: 6000/6000 | FP: 0 | FN: 0
 
 ---
 
+## Observabilidade Runtime (2026-05-23)
+
+Adicionado módulo `src/metrics.rs` com 7 contadores atômicos (`AtomicU64`, `Relaxed`) e endpoint `GET /metrics`:
+
+| Contador | Descrição |
+|----------|-----------|
+| `request_total` | Total de POST /fraud-score processados |
+| `fast_path_count` | Requests resolvidos pelo fast-path Legit |
+| `ivf_count` | Requests despachados para IVF (spawn_blocking) |
+| `fast_probe_count` | Chamadas IVF com nprobe=5 |
+| `full_probe_count` | Chamadas IVF com nprobe=24 (ambíguo: score 2 ou 3) |
+| `fast_probe_total_us` | µs acumulados em fast probe |
+| `full_probe_total_us` | µs acumulados em full probe |
+
+`knn5_ivf` instrumentado com `Instant::now()` — sem alocações, sem overhead observável.
+
+**Exp 3 — Safety zone LOW (0.20 → 0.25):** UNSAFE.  
+1 vetor fraud com score 0.2386 cai na zona (0.20, 0.25] (em 3M referências).  
+**NÃO elevar LOW para 0.25 — introduz 1 FN real.**
+
+**Ferramentas offline adicionadas:**
+- `tools/eval_recall.py` — benchmark recall brute-force vs IVF (nprobe=5 e 24)
+- `tools/threshold_analysis.py` — conta vetores fraud na safety zone do threshold
+
+---
+
 ## Evolução Arquitetural
 
 ### Fase 1 — Baseline (nginx + pure IVF)
@@ -76,6 +102,11 @@ IVF prova 0 FPs em dataset 797. No dataset 645, 23 FPs são intrínsecos ao IVF 
 
 - [ ] Testar em dataset 797 com código atual → esperado score > 4071
 - [ ] Investigar os 23 FPs do IVF no dataset 645 (threshold KNN ou NPROBE)
+- [ ] Coletar dados reais via GET /metrics em produção para validar H1/H2/H3
+- [ ] Rodar `tools/eval_recall.py` para medir recall IVF vs brute-force nos dados de teste
+- [ ] Se `full_probe_count / fast_probe_count > 50%` → Exp 4a (reduzir FULL_NPROBE 24→12)
+- [ ] Se wall-time >> CPU-time em full-probe → Exp 4c (max_blocking 2→4)
+- [x] Exp 3 — LOW 0.20→0.25: UNSAFE (1 FN) — Exp 4b bloqueado
 - [ ] Avaliar reativação do Fraud fast-path com threshold mais conservador (ex: HIGH=0.999)
 - [ ] Re-treinar modelo com dados aumentados para reduzir sensibilidade a distribuição
 
@@ -87,6 +118,9 @@ IVF prova 0 FPs em dataset 797. No dataset 645, 23 FPs são intrínsecos ao IVF 
 make bench         # build + docker up + k6 load test + score
 make score         # só mostra score do último results.json
 make submission    # build image + force-push branch submission
-cargo test         # 34 testes unitários
-uv run tools/train_model.py   # re-treina LightGBM + exporta model_gen.rs
+cargo test         # 38 testes unitários
+uv run tools/train_model.py         # re-treina LightGBM + exporta model_gen.rs
+uv run tools/eval_recall.py         # benchmark recall IVF vs brute-force
+uv run tools/threshold_analysis.py  # safety zone análise do threshold LOW
+curl --unix-socket $SOCK http://localhost/metrics  # métricas runtime
 ```
