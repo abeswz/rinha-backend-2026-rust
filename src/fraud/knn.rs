@@ -10,10 +10,23 @@ thread_local! {
 }
 
 pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
+    use crate::metrics;
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::Instant;
+
+    let t0 = Instant::now();
     let fast = probe(q, ds, FAST_NPROBE);
+    let fast_us = t0.elapsed().as_micros() as u64;
+    metrics::FAST_PROBE_COUNT.fetch_add(1, Relaxed);
+    metrics::FAST_PROBE_TOTAL_US.fetch_add(fast_us, Relaxed);
+
     let fraud_count = count_fraud(fast);
     if fraud_count == 2 || fraud_count == 3 {
+        let t1 = Instant::now();
         let full = probe(q, ds, FULL_NPROBE);
+        let full_us = t1.elapsed().as_micros() as u64;
+        metrics::FULL_PROBE_COUNT.fetch_add(1, Relaxed);
+        metrics::FULL_PROBE_TOTAL_US.fetch_add(full_us, Relaxed);
         count_fraud(full) as u8
     } else {
         fraud_count as u8
@@ -326,5 +339,17 @@ mod tests {
         let ds = data::dataset();
         let result = knn5_ivf(&q, ds);
         assert!(result <= 5, "knn5_ivf must return 0..=5, got {result}");
+    }
+
+    #[test]
+    fn fast_probe_counter_increments() {
+        use crate::metrics;
+        use std::sync::atomic::Ordering::Relaxed;
+
+        data::init();
+        let before = metrics::FAST_PROBE_COUNT.load(Relaxed);
+        let _ = knn5_ivf(&[0.0f32; 14], data::dataset());
+        let after = metrics::FAST_PROBE_COUNT.load(Relaxed);
+        assert!(after > before, "FAST_PROBE_COUNT must increase after knn5_ivf call");
     }
 }
