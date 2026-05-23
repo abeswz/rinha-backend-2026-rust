@@ -4,7 +4,6 @@
 # dependencies = [
 #   "lightgbm>=4.3",
 #   "scikit-learn>=1.4",
-#   "skl2onnx>=1.16",
 #   "onnxmltools>=1.12",
 #   "numpy>=1.26",
 #   "onnxruntime>=1.18",
@@ -21,8 +20,8 @@ import numpy as np
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-from skl2onnx import convert_sklearn
-from skl2onnx.common.data_types import FloatTensorType
+from onnxmltools import convert_lightgbm
+from onnxmltools.convert.common.data_types import FloatTensorType
 import onnxruntime as rt
 
 ROOT = Path(__file__).parent.parent
@@ -86,8 +85,7 @@ def train(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
 
 def export_onnx(model: lgb.LGBMClassifier) -> None:
     initial_type = [("float_input", FloatTensorType([None, D]))]
-    options = {lgb.LGBMClassifier: {"zipmap": False}}
-    onx = convert_sklearn(model, initial_types=initial_type, options=options)
+    onx = convert_lightgbm(model, initial_types=initial_type, target_opset=12)
     OUTPUT.write_bytes(onx.SerializeToString())
     print(f"Wrote {OUTPUT} ({OUTPUT.stat().st_size // 1024} KB)", file=sys.stderr)
 
