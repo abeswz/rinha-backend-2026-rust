@@ -1,5 +1,6 @@
 mod env;
 mod fraud;
+mod metrics;
 mod net;
 
 use tokio::net::UnixListener;
