@@ -137,9 +137,8 @@ pub async fn serve_connection(mut stream: UnixStream) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
                             match crate::fraud::model::predict(&vec) {
-                                crate::fraud::model::Decision::Fraud => http_body_for(5),
                                 crate::fraud::model::Decision::Legit => http_body_for(0),
-                                crate::fraud::model::Decision::Uncertain => {
+                                _ => {
                                     tokio::task::spawn_blocking(move || http_body_for(knn::knn5_ivf(&vec, ds)))
                                         .await
                                         .unwrap_or(http_body_for(0))
@@ -220,14 +219,14 @@ mod tests {
     }
 
     #[test]
-    fn model_fast_path_fraud_returns_approved_false() {
+    fn model_classifies_all_ones_as_fraud() {
         crate::fraud::data::init();
         crate::fraud::model::init();
         let fraud_vec = [1.0f32; 14];
         let decision = crate::fraud::model::predict(&fraud_vec);
         assert!(
             matches!(decision, crate::fraud::model::Decision::Fraud),
-            "all-ones vector must take model fast path as Fraud"
+            "all-ones vector must classify as Fraud"
         );
     }
 
