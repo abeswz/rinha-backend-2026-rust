@@ -10,6 +10,7 @@ const RX_CAP: usize = 8192;
 pub enum Route {
     FraudScore,
     Ready,
+    Metrics,
     NotFound,
 }
 
@@ -74,9 +75,25 @@ pub fn detect_route(first_line: &[u8]) -> Route {
         Route::FraudScore
     } else if first_line.starts_with(b"GET /ready") {
         Route::Ready
+    } else if first_line.starts_with(b"GET /metrics") {
+        Route::Metrics
     } else {
         Route::NotFound
     }
+}
+
+pub fn build_metrics_body() -> String {
+    let s = crate::metrics::snapshot();
+    format!(
+        r#"{{"fast_path_count":{fp},"ivf_count":{iv},"fast_probe_count":{fc},"full_probe_count":{dc},"fast_probe_total_us":{fus},"full_probe_total_us":{dus},"request_total":{rt}}}"#,
+        fp = s.fast_path_count,
+        iv = s.ivf_count,
+        fc = s.fast_probe_count,
+        dc = s.full_probe_count,
+        fus = s.fast_probe_total_us,
+        dus = s.full_probe_total_us,
+        rt = s.request_total,
+    )
 }
 
 pub async fn serve_connection(mut stream: UnixStream) {
@@ -115,6 +132,9 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     consumed += header_end;
                 }
                 Route::FraudScore => {
+                    use crate::metrics;
+                    use std::sync::atomic::Ordering::Relaxed;
+                    metrics::REQUEST_TOTAL.fetch_add(1, Relaxed);
                     let cl = match parse_content_length(header_bytes) {
                         Some(n) => n,
                         None => {
@@ -137,8 +157,12 @@ pub async fn serve_connection(mut stream: UnixStream) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
                             match crate::fraud::model::predict(&vec) {
-                                crate::fraud::model::Decision::Legit => http_body_for(0),
+                                crate::fraud::model::Decision::Legit => {
+                                    metrics::FAST_PATH_COUNT.fetch_add(1, Relaxed);
+                                    http_body_for(0)
+                                }
                                 _ => {
+                                    metrics::IVF_COUNT.fetch_add(1, Relaxed);
                                     tokio::task::spawn_blocking(move || http_body_for(knn::knn5_ivf(&vec, ds)))
                                         .await
                                         .unwrap_or(http_body_for(0))
@@ -149,6 +173,16 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     };
                     tx_buf.extend_from_slice(resp);
                     consumed = body_end;
+                }
+                Route::Metrics => {
+                    let body = build_metrics_body();
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
+                        body.len()
+                    );
+                    tx_buf.extend_from_slice(header.as_bytes());
+                    tx_buf.extend_from_slice(body.as_bytes());
+                    consumed += header_end;
                 }
             }
         }
@@ -240,5 +274,39 @@ mod tests {
             matches!(decision, crate::fraud::model::Decision::Legit),
             "all-zeros vector must take model fast path as Legit"
         );
+    }
+
+    #[test]
+    fn detect_route_metrics() {
+        assert_eq!(detect_route(b"GET /metrics HTTP/1.1"), Route::Metrics);
+    }
+
+    #[test]
+    fn metrics_body_contains_all_keys() {
+        use crate::metrics;
+        use std::sync::atomic::Ordering::Relaxed;
+        metrics::REQUEST_TOTAL.store(5, Relaxed);
+        metrics::FAST_PATH_COUNT.store(2, Relaxed);
+        metrics::IVF_COUNT.store(3, Relaxed);
+        metrics::FAST_PROBE_COUNT.store(3, Relaxed);
+        metrics::FULL_PROBE_COUNT.store(1, Relaxed);
+        metrics::FAST_PROBE_TOTAL_US.store(120, Relaxed);
+        metrics::FULL_PROBE_TOTAL_US.store(80, Relaxed);
+
+        let body = build_metrics_body();
+        for key in ["fast_path_count", "ivf_count", "fast_probe_count", "full_probe_count",
+                    "fast_probe_total_us", "full_probe_total_us", "request_total"] {
+            assert!(body.contains(key), "missing key: {key}");
+        }
+        assert!(body.contains("\"request_total\":5"), "wrong request_total");
+        assert!(body.contains("\"fast_path_count\":2"), "wrong fast_path_count");
+
+        metrics::REQUEST_TOTAL.store(0, Relaxed);
+        metrics::FAST_PATH_COUNT.store(0, Relaxed);
+        metrics::IVF_COUNT.store(0, Relaxed);
+        metrics::FAST_PROBE_COUNT.store(0, Relaxed);
+        metrics::FULL_PROBE_COUNT.store(0, Relaxed);
+        metrics::FAST_PROBE_TOTAL_US.store(0, Relaxed);
+        metrics::FULL_PROBE_TOTAL_US.store(0, Relaxed);
     }
 }
