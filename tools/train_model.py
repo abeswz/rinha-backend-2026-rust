@@ -4,6 +4,7 @@
 # dependencies = [
 #   "lightgbm>=4.3",
 #   "scikit-learn>=1.4",
+#   "skl2onnx>=1.16",
 #   "onnxmltools>=1.12",
 #   "numpy>=1.26",
 #   "onnxruntime>=1.18",
@@ -20,8 +21,31 @@ import numpy as np
 import lightgbm as lgb
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
-from onnxmltools import convert_lightgbm
-from onnxmltools.convert.common.data_types import FloatTensorType
+import onnxmltools.convert.lightgbm.shape_calculators.Classifier as _lgb_clf_module
+from onnxmltools.convert.lightgbm.operator_converters.LightGbm import convert_lightgbm as lgb_converter
+from onnxmltools.convert.common.data_types import FloatTensorType as OnnxmlFloatTensorType
+from skl2onnx import convert_sklearn, update_registered_converter
+from skl2onnx.common.data_types import FloatTensorType
+
+# onnxmltools shape calculator checks input types against its own FloatTensorType,
+# but convert_sklearn passes skl2onnx's FloatTensorType. Patch the check to accept both.
+_orig_type_check = _lgb_clf_module.check_input_and_output_types
+
+
+def _patched_type_check(operator, good_input_types=None, good_output_types=None):
+    if good_input_types is not None:
+        extended = list(good_input_types)
+        if OnnxmlFloatTensorType in extended and FloatTensorType not in extended:
+            extended.append(FloatTensorType)
+        good_input_types = extended
+    return _orig_type_check(operator, good_input_types=good_input_types, good_output_types=good_output_types)
+
+
+_lgb_clf_module.check_input_and_output_types = _patched_type_check
+
+from onnxmltools.convert.lightgbm.shape_calculators.Classifier import (  # noqa: E402
+    calculate_lightgbm_classifier_output_shapes,
+)
 import onnxruntime as rt
 
 ROOT = Path(__file__).parent.parent
@@ -84,8 +108,21 @@ def train(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
 
 
 def export_onnx(model: lgb.LGBMClassifier) -> None:
+    update_registered_converter(
+        lgb.LGBMClassifier,
+        "LightGbmLGBMClassifier",
+        calculate_lightgbm_classifier_output_shapes,
+        lgb_converter,
+        options={"nocl": [True, False], "zipmap": [True, False]},
+    )
     initial_type = [("float_input", FloatTensorType([None, D]))]
-    onx = convert_lightgbm(model, initial_types=initial_type, target_opset=12)
+    options = {lgb.LGBMClassifier: {"zipmap": False}}
+    onx = convert_sklearn(
+        model,
+        initial_types=initial_type,
+        options=options,
+        target_opset={"": 12, "ai.onnx.ml": 3},
+    )
     OUTPUT.write_bytes(onx.SerializeToString())
     print(f"Wrote {OUTPUT} ({OUTPUT.stat().st_size // 1024} KB)", file=sys.stderr)
 
