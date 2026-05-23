@@ -136,11 +136,17 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     let resp = match json::parse(body) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
-                            let count =
-                                tokio::task::spawn_blocking(move || knn::knn5_ivf(&vec, ds))
-                                    .await
-                                    .unwrap_or(0);
-                            http_body_for(count)
+                            tokio::task::spawn_blocking(move || {
+                                match crate::fraud::model::predict(&vec) {
+                                    crate::fraud::model::Decision::Fraud => http_body_for(5),
+                                    crate::fraud::model::Decision::Legit => http_body_for(0),
+                                    crate::fraud::model::Decision::Uncertain => {
+                                        http_body_for(knn::knn5_ivf(&vec, ds))
+                                    }
+                                }
+                            })
+                            .await
+                            .unwrap_or(http_body_for(0))
                         }
                         None => RESP_BAD_REQ,
                     };
@@ -213,5 +219,29 @@ mod tests {
         );
         assert_eq!(detect_route(b"GET /ready HTTP/1.1"), Route::Ready);
         assert_eq!(detect_route(b"GET /unknown HTTP/1.1"), Route::NotFound);
+    }
+
+    #[test]
+    fn model_fast_path_fraud_returns_approved_false() {
+        crate::fraud::data::init();
+        crate::fraud::model::init();
+        let fraud_vec = [1.0f32; 14];
+        let decision = crate::fraud::model::predict(&fraud_vec);
+        assert!(
+            matches!(decision, crate::fraud::model::Decision::Fraud),
+            "all-ones vector must take model fast path as Fraud"
+        );
+    }
+
+    #[test]
+    fn model_fast_path_legit_returns_approved_true() {
+        crate::fraud::data::init();
+        crate::fraud::model::init();
+        let legit_vec = [0.0f32; 14];
+        let decision = crate::fraud::model::predict(&legit_vec);
+        assert!(
+            matches!(decision, crate::fraud::model::Decision::Legit),
+            "all-zeros vector must take model fast path as Legit"
+        );
     }
 }
