@@ -1,144 +1,75 @@
 ## Objective
 
-Build a minimal, high-performance fraud detection API in Rust.
-
-The service:
-1. receives transaction payloads
-2. processes fraud comparison vectors
-3. computes fraud risk
-4. returns structured JSON responses
-
-Primary goals:
-- low latency
-- low memory usage
-- predictable performance
-- maintainability
+High-performance fraud detection API in Rust. Minimal allocations, sub-millisecond p99.
 
 ---
 
 ## Stack
 
-- Axum
-- Tokio
-- Reqwest
-- Serde
-- dotenvy
-- tracing
+- **tokio** (raw, minimal features: rt, rt-multi-thread, macros, net, io-util)
+- **mimalloc** — global allocator
+- **memchr** — fast byte scanning in HTTP parser
+- **aligned-vec, flate2** — IVF index loading
+- **serde, serde_json** — request deserialization only
+- **libc** — low-level OS calls
 
-Do not replace the stack unless explicitly requested.
+No Axum. No Reqwest. No tracing. No dotenvy.
+
+---
+
+## Architecture
+
+**Transport**: Unix socket → custom HTTP/1.1 parser → keep-alive connections.
+No HTTP framework. Responses are pre-baked static `&[u8]` slices (6 levels).
+
+**Fraud pipeline** (per request):
+1. Deserialize JSON → build 14-dim f32 feature vector
+2. IVF KNN search (K=4096 centroids, NPROBE=5 fast / 24 full)
+3. Count fraud labels among top-5 neighbors → return static response
+
+**Model** (`fraud/model.rs`): m2cgen-generated inline Rust (LightGBM, <50µs).
+Currently compiled in but **fast-path disabled** — all requests route to IVF to avoid false positives.
+
+**Binaries**:
+- `src/main.rs` — HTTP server (2 worker threads, 2 blocking threads)
+- `bin/lb.rs` — custom load balancer
+- `bin/build_index.rs` — IVF index builder
+
+**ML tools** (Python, run offline):
+- `tools/train_model.py` — LightGBM training + m2cgen export
+- `tools/build_ivf.py` — builds `resources/ivf_index.bin`
 
 ---
 
 ## Engineering Priorities
 
-Priority order:
 1. correctness
 2. simplicity
 3. performance
 4. maintainability
-5. extensibility
 
 ---
 
-## Memory Constraints
+## Constraints
 
-Target runtime:
-- 1 CPU
-- 350MB RAM
-
-Optimize for:
-- low allocations
-- reduced cloning
-- bounded memory growth
-- async I/O efficiency
+- 1 CPU, 350MB RAM
+- No unnecessary allocations, clones, Arc, or Mutex
+- No blocking calls inside async
+- Fraud logic independent from HTTP transport
+- Deterministic — no randomness, no hidden global mutable state
 
 ---
 
-## Fraud Engine Rules
+## Release Profile
 
-Fraud logic must:
-- be deterministic
-- avoid randomness
-- avoid hidden mutable global state
-- support reproducible tests
-
-Core logic must be independent from HTTP transport.
+LTO fat, codegen-units=1, strip, panic=abort, overflow-checks=false.
 
 ---
 
-## API Guidelines
+## Testing
 
-Use:
-- typed request DTOs
-- typed response DTOs
-- structured errors
-- HTTP status consistency
-
-Avoid:
-- generic string errors
-- dynamic maps
-- untyped JSON processing
-
----
-
-## Testing Expectations
-
-Every core feature requires:
-- unit tests
-- integration tests
-- regression tests
-
-Important:
-Tests must validate real fraud scenarios.
-
-Examples:
-- duplicated transaction patterns
-- abnormal velocity
-- suspicious value spikes
-- malformed requests
-- invalid timestamps
-
----
-
-## Performance Guidelines
-
-Prefer:
-- iterators
-- slices
-- borrowing
-- preallocated buffers when justified
-
-Avoid:
-- unnecessary Arc usage
-- unnecessary Mutex usage
-- blocking calls inside async
-- excessive cloning
-
----
-
-## Logging
-
-Use `tracing`.
-
-Requirements:
-- structured logs
-- request IDs
-- error context
-
-Never log:
-- secrets
-- full sensitive payloads
-
----
-
-## Deliverables
-
-All generated code must:
-- compile
-- pass tests
-- be formatted
-- pass clippy
-- avoid warnings
+Every core feature needs unit + integration + regression tests.
+Tests must cover real fraud scenarios: duplicate patterns, velocity spikes, malformed requests, invalid timestamps.
 
 ---
 
