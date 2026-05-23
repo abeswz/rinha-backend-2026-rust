@@ -8,6 +8,7 @@
 #   "onnxmltools>=1.12",
 #   "numpy>=1.26",
 #   "onnxruntime>=1.18",
+#   "m2cgen>=0.10",
 # ]
 # ///
 """Train LightGBM fraud classifier, export to resources/model.onnx."""
@@ -143,9 +144,31 @@ def validate_onnx() -> None:
     print("ONNX validation passed", file=sys.stderr)
 
 
+def export_rust(model: lgb.LGBMClassifier) -> None:
+    import m2cgen as m2c
+    code = m2c.export_to_rust(model)
+    # Make score and sigmoid public
+    code = code.replace("fn score(", "pub fn score(").replace("fn sigmoid(", "pub fn sigmoid(")
+    # Suppress clippy warnings on generated code
+    allow_attrs = (
+        "#![allow(clippy::collapsible_else_if)]\n"
+        "#![allow(clippy::collapsible_if)]\n"
+        "#![allow(clippy::if_same_then_else)]\n"
+        "#![allow(clippy::needless_late_init)]\n"
+        "#![allow(unused_assignments)]\n"
+        "#![allow(unused_variables)]\n"
+    )
+    code = allow_attrs + code
+    rust_path = ROOT / "src" / "fraud" / "model_gen.rs"
+    rust_path.write_text(code)
+    size = rust_path.stat().st_size
+    print(f"Wrote {rust_path} ({size // 1024} KB, {code.count('if ') + code.count('} else')} branches)", file=sys.stderr)
+
+
 if __name__ == "__main__":
     X, y = load_data()
     model = train(X, y)
     export_onnx(model)
     validate_onnx()
+    export_rust(model)
     print("Done.", file=sys.stderr)

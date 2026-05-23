@@ -136,17 +136,15 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     let resp = match json::parse(body) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
-                            tokio::task::spawn_blocking(move || {
-                                match crate::fraud::model::predict(&vec) {
-                                    crate::fraud::model::Decision::Fraud => http_body_for(5),
-                                    crate::fraud::model::Decision::Legit => http_body_for(0),
-                                    crate::fraud::model::Decision::Uncertain => {
-                                        http_body_for(knn::knn5_ivf(&vec, ds))
-                                    }
+                            match crate::fraud::model::predict(&vec) {
+                                crate::fraud::model::Decision::Fraud => http_body_for(5),
+                                crate::fraud::model::Decision::Legit => http_body_for(0),
+                                crate::fraud::model::Decision::Uncertain => {
+                                    tokio::task::spawn_blocking(move || http_body_for(knn::knn5_ivf(&vec, ds)))
+                                        .await
+                                        .unwrap_or(http_body_for(0))
                                 }
-                            })
-                            .await
-                            .unwrap_or(http_body_for(0))
+                            }
                         }
                         None => RESP_BAD_REQ,
                     };
