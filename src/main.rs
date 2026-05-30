@@ -1,6 +1,5 @@
 mod env;
 mod fraud;
-mod metrics;
 mod net;
 
 use tokio::net::UnixListener;
@@ -10,8 +9,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
-        .max_blocking_threads(2)
+        .worker_threads(4)
+        .thread_stack_size(512 * 1024)
         .enable_all()
         .build()
         .expect("failed to build runtime")
@@ -20,7 +19,6 @@ fn main() {
 
 async fn run() {
     fraud::data::init();
-    fraud::knn::warmup();
 
     let sock_path = env::sock_path();
     let _ = std::fs::remove_file(&sock_path);
