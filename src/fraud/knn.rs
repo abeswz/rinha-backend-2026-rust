@@ -10,23 +10,10 @@ thread_local! {
 }
 
 pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
-    use crate::metrics;
-    use std::sync::atomic::Ordering::Relaxed;
-    use std::time::Instant;
-
-    let t0 = Instant::now();
     let fast = probe(q, ds, FAST_NPROBE);
-    let fast_us = t0.elapsed().as_micros() as u64;
-    metrics::FAST_PROBE_COUNT.fetch_add(1, Relaxed);
-    metrics::FAST_PROBE_TOTAL_US.fetch_add(fast_us, Relaxed);
-
     let fraud_count = count_fraud(fast);
     if fraud_count == 2 || fraud_count == 3 {
-        let t1 = Instant::now();
         let full = probe(q, ds, FULL_NPROBE);
-        let full_us = t1.elapsed().as_micros() as u64;
-        metrics::FULL_PROBE_COUNT.fetch_add(1, Relaxed);
-        metrics::FULL_PROBE_TOTAL_US.fetch_add(full_us, Relaxed);
         count_fraud(full) as u8
     } else {
         fraud_count as u8
@@ -90,25 +77,6 @@ unsafe fn centroid_dists_avx2(q: &[f32; 14], centroids: *const f32, dists: *mut 
     }
 }
 
-#[allow(dead_code)]
-fn centroid_dists_scalar(q: &[f32; 14], centroids: *const f32, dists: *mut f32) {
-    for i in 0..K {
-        unsafe {
-            *dists.add(i) = 0.0f32;
-        }
-    }
-    #[allow(clippy::needless_range_loop)]
-    for d in 0..14usize {
-        let qd = q[d];
-        let base = d * K;
-        for ci in 0..K {
-            let diff = unsafe { *centroids.add(base + ci) } - qd;
-            unsafe {
-                *dists.add(ci) += diff * diff;
-            }
-        }
-    }
-}
 
 fn top_n_centroids_fast(dists: &[f32; K], nprobe: usize) -> [u16; FULL_NPROBE] {
     let nprobe = nprobe.min(FULL_NPROBE);
@@ -130,11 +98,14 @@ fn top_n_centroids_fast(dists: &[f32; K], nprobe: usize) -> [u16; FULL_NPROBE] {
 
 fn probe(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
     #[cfg(target_arch = "x86_64")]
-    {
-        unsafe { probe_avx2(q, ds, nprobe) }
+    unsafe {
+        probe_avx2(q, ds, nprobe)
     }
     #[cfg(not(target_arch = "x86_64"))]
-    probe_scalar(q, ds, nprobe)
+    {
+        let _ = (q, ds, nprobe);
+        unimplemented!("requires x86_64")
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -147,63 +118,6 @@ unsafe fn probe_avx2(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
     scan_blocks_avx2(q, ds, &top[..nprobe])
 }
 
-#[cfg(not(target_arch = "x86_64"))]
-fn probe_scalar(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
-    let dists_ptr = DISTS.with(|cell| cell.get() as *mut f32);
-    centroid_dists_scalar(q, ds.centroids.as_ptr(), dists_ptr);
-    let dists: &[f32; K] = unsafe { &*(dists_ptr as *const [f32; K]) };
-    let top = top_n_centroids_fast(dists, nprobe);
-    scan_blocks_scalar(q, ds, &top[..nprobe])
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn scan_blocks_scalar(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 5] {
-    const K_NEIGHBORS: usize = 5;
-    let mut top: [(u32, u8); 5] = [(u32::MAX, 0u8); K_NEIGHBORS];
-    let mut worst_bits = u32::MAX;
-
-    for &ci in probed {
-        let ci = ci as usize;
-        let block_start = ds.offsets[ci] as usize;
-        let block_end = ds.offsets[ci + 1] as usize;
-
-        for block_i in block_start..block_end {
-            let bb = block_i * 14 * 8;
-            let lb = block_i * 8;
-
-            let mut partial = 0.0f32;
-            for d in 0..8usize {
-                let raw = ds.blocks[bb + d * 8] as f32;
-                let diff = q[d] - raw * 0.0001;
-                partial += diff * diff;
-            }
-            if partial.to_bits() >= worst_bits && top[K_NEIGHBORS - 1].0 < u32::MAX {
-                continue;
-            }
-
-            for slot in 0..8usize {
-                let mut sq = 0.0f32;
-                for d in 0..14usize {
-                    let raw = ds.blocks[bb + d * 8 + slot] as f32;
-                    let diff = q[d] - raw * 0.0001;
-                    sq += diff * diff;
-                }
-                let bits = sq.to_bits();
-                let label = ds.labels[lb + slot];
-                if bits < worst_bits {
-                    let insert_pos = top.partition_point(|&(d, _)| d <= bits);
-                    if insert_pos < K_NEIGHBORS {
-                        top[insert_pos..].rotate_right(1);
-                        top[insert_pos] = (bits, label);
-                        worst_bits = top[K_NEIGHBORS - 1].0;
-                    }
-                }
-            }
-        }
-    }
-
-    [top[0].1, top[1].1, top[2].1, top[3].1, top[4].1]
-}
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2,fma")]
@@ -341,15 +255,5 @@ mod tests {
         assert!(result <= 5, "knn5_ivf must return 0..=5, got {result}");
     }
 
-    #[test]
-    fn fast_probe_counter_increments() {
-        use crate::metrics;
-        use std::sync::atomic::Ordering::Relaxed;
 
-        data::init();
-        let before = metrics::FAST_PROBE_COUNT.load(Relaxed);
-        let _ = knn5_ivf(&[0.0f32; 14], data::dataset());
-        let after = metrics::FAST_PROBE_COUNT.load(Relaxed);
-        assert!(after > before, "FAST_PROBE_COUNT must increase after knn5_ivf call");
-    }
 }
