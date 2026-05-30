@@ -29,7 +29,7 @@ REFS_PATH = ROOT / "resources" / "references.json.gz"
 TEST_PATH = ROOT / "test" / "test-data.json"
 
 K_NEIGHBORS = 5
-FAST_NPROBE = 8
+FAST_NPROBE = 16
 FULL_NPROBE = 24
 SCALE = 100
 
