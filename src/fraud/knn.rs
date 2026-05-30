@@ -13,9 +13,8 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
     let fast = probe(q, ds, FAST_NPROBE);
     let fraud_count = count_fraud(fast);
     if fraud_count == 2 || fraud_count == 3 {
-        let q_f64: [f64; 14] = std::array::from_fn(|i| q[i] as f64);
-        let p_fraud = super::model_gen::predict_fraud(&q_f64);
-        if p_fraud >= 0.50 { 3 } else { 2 }
+        let full = probe(q, ds, FULL_NPROBE);
+        count_fraud(full) as u8
     } else {
         fraud_count as u8
     }
