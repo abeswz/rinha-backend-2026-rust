@@ -4,6 +4,7 @@
 #![allow(clippy::needless_late_init)]
 #![allow(unused_assignments)]
 #![allow(unused_variables)]
+#![allow(dead_code)]
 pub fn score(input: Vec<f64>) -> Vec<f64> {
     let var0: f64;
     if input[2] > 0.10570000112056734_f64 {

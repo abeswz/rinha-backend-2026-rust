@@ -136,7 +136,7 @@ pub async fn serve_connection(mut stream: UnixStream) {
                     let resp = match json::parse(body) {
                         Some(payload) => {
                             let vec = vector::vectorize(&payload);
-                            http_body_for(knn::knn5_ivf(&vec, ds))
+                            http_body_for(knn::knn5_exact(&vec, ds))
                         }
                         None => RESP_BAD_REQ,
                     };
