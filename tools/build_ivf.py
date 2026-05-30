@@ -43,57 +43,128 @@ def quantize(arr: np.ndarray) -> np.ndarray:
     return np.clip(np.round(arr * SCALE), -128, 127).astype(np.int8)
 
 
-def _write_ivf2(vectors: np.ndarray, labels: np.ndarray, k: int, output_path: str) -> None:
+def _write_ivf2(
+    vectors: np.ndarray,
+    labels: np.ndarray,
+    k: int,
+    output_path: str,
+) -> None:
     """Fit KMeans, build IVF2 binary, write to output_path."""
     n, d = vectors.shape
     assert d == D
 
-    km = faiss.Kmeans(d, k, niter=20, nredo=1, verbose=True, seed=RANDOM_STATE)
+    print("Training KMeans...", flush=True)
+
+    km = faiss.Kmeans(
+        d,
+        k,
+        niter=20,
+        nredo=1,
+        verbose=True,
+        seed=RANDOM_STATE,
+    )
+
     km.train(vectors)
-    centroids = km.centroids  # shape: (k, d), float32
+
+    centroids = km.centroids
+
+    print("Assigning vectors to centroids...", flush=True)
+
     _, asn = km.index.search(vectors, 1)
-    assignments = asn.flatten()
+    assignments = asn.ravel()
 
-    # Group vector indices by cluster
-    cluster_vecs: list[list[int]] = [[] for _ in range(k)]
-    for i, ci in enumerate(assignments):
-        cluster_vecs[ci].append(i)
+    print("Quantizing vectors...", flush=True)
 
-    # Compute block offsets (unit: 8-vector blocks)
+    qvectors = quantize(vectors)
+
+    print("Sorting by cluster...", flush=True)
+
+    order = np.argsort(assignments, kind="stable")
+    sorted_clusters = assignments[order]
+
+    counts = np.bincount(assignments, minlength=k)
+
+    cluster_offsets = np.zeros(k + 1, dtype=np.int64)
+    cluster_offsets[1:] = np.cumsum(counts)
+
     block_offsets = np.zeros(k + 1, dtype=np.uint32)
-    for ci in range(k):
-        n_blocks = (len(cluster_vecs[ci]) + 7) // 8
-        block_offsets[ci + 1] = block_offsets[ci] + n_blocks
-
-    total_blocks = int(block_offsets[k])
-    padded_n = total_blocks * 8
-
-    out_labels = np.zeros(padded_n, dtype=np.uint8)
-    out_blocks = np.full(total_blocks * d * 8, fill_value=127, dtype=np.int8)
 
     for ci in range(k):
+        n_vecs = int(counts[ci])
+        block_offsets[ci + 1] = block_offsets[ci] + ((n_vecs + 7) // 8)
+
+    total_blocks = int(block_offsets[-1])
+
+    out_labels = np.zeros(total_blocks * 8, dtype=np.uint8)
+
+    out_blocks = np.full(
+        total_blocks * d * 8,
+        fill_value=127,
+        dtype=np.int8,
+    )
+
+    print(
+        f"Packing {total_blocks:,} blocks...",
+        flush=True,
+    )
+
+    for ci in range(k):
+        start = int(cluster_offsets[ci])
+        end = int(cluster_offsets[ci + 1])
+
+        if start == end:
+            continue
+
+        idx = order[start:end]
+
+        cluster_labels = labels[idx]
+        cluster_vectors = qvectors[idx]
+
+        n_vecs = len(idx)
+        n_blocks = (n_vecs + 7) // 8
+
+        padded_size = n_blocks * 8
+        pad = padded_size - n_vecs
+
+        if pad:
+            cluster_labels = np.pad(
+                cluster_labels,
+                (0, pad),
+                mode="constant",
+                constant_values=0,
+            )
+
+            cluster_vectors = np.pad(
+                cluster_vectors,
+                ((0, pad), (0, 0)),
+                mode="constant",
+                constant_values=127,
+            )
+
+        labels_2d = cluster_labels.reshape(
+            n_blocks,
+            8,
+        )
+
+        blocks_3d = cluster_vectors.reshape(n_blocks, 8, d).transpose(0, 2, 1)
+
         block_start = int(block_offsets[ci])
-        vecs_ci = cluster_vecs[ci]
-        n_blocks = int(block_offsets[ci + 1]) - block_start
 
-        for bk in range(n_blocks):
-            block_idx = block_start + bk
-            label_base = block_idx * 8
-            block_base = block_idx * d * 8
+        out_labels[block_start * 8 : (block_start + n_blocks) * 8] = labels_2d.ravel()
 
-            for slot in range(8):
-                vi_pos = bk * 8 + slot
-                if vi_pos >= len(vecs_ci):
-                    break
-                vi = vecs_ci[vi_pos]
-                out_labels[label_base + slot] = labels[vi]
-                for dim in range(d):
-                    out_blocks[block_base + dim * 8 + slot] = quantize(vectors[vi, dim : dim + 1])[0]
+        out_blocks[block_start * d * 8 : (block_start + n_blocks) * d * 8] = (
+            blocks_3d.ravel()
+        )
 
-    # centroids: column-major [d * k]
-    centroids_t = centroids.T.copy()  # shape (d, k), row = dim
+    print("Writing file...", flush=True)
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    centroids_t = centroids.T.copy()
+
+    Path(output_path).parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
     with open(output_path, "wb") as f:
         f.write(b"IVF2")
         f.write(struct.pack("<III", n, k, d))
@@ -104,8 +175,8 @@ def _write_ivf2(vectors: np.ndarray, labels: np.ndarray, k: int, output_path: st
 
 
 def _test_ivf2_roundtrip():
-    import tempfile
     import os
+    import tempfile
 
     n_test, k_test = 80, 4
     rng = np.random.default_rng(42)
