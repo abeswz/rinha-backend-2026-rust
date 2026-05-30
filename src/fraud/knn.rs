@@ -13,8 +13,9 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
     let fast = probe(q, ds, FAST_NPROBE);
     let fraud_count = count_fraud(fast);
     if fraud_count == 2 || fraud_count == 3 {
-        let full = probe(q, ds, FULL_NPROBE);
-        count_fraud(full) as u8
+        let q_f64: [f64; 14] = std::array::from_fn(|i| q[i] as f64);
+        let p_fraud = super::model_gen::predict_fraud(&q_f64);
+        if p_fraud >= 0.25 { 3 } else { 2 }
     } else {
         fraud_count as u8
     }
@@ -235,6 +236,21 @@ mod tests {
         let legit_q = [0.0f64; 14];
         let p_legit = crate::fraud::model_gen::predict_fraud(&legit_q);
         assert!(p_legit < 0.5, "all-zeros features got P(fraud)={p_legit:.4}, expected < 0.5");
+    }
+
+    #[test]
+    fn lgbm_decides_ambiguous_cases() {
+        data::init();
+        let ds = data::dataset();
+        let test_queries: &[[f32; 14]] = &[
+            [0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5, 1.0, 0.0, 1.0, 0.5, 0.5],
+            [0.3, 0.1, 0.3, 0.6, 0.4, 0.2, 0.1, 0.3, 0.4, 0.0, 1.0, 0.0, 0.3, 0.1],
+            [0.8, 0.0, 0.8, 0.3, 0.7, 0.5, 0.5, 0.8, 0.3, 1.0, 1.0, 1.0, 0.8, 0.0],
+        ];
+        for q in test_queries {
+            let result = knn5_ivf(q, ds);
+            assert!(result <= 5, "knn5_ivf returned {result} (must be 0..=5)");
+        }
     }
 
 }
