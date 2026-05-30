@@ -15,7 +15,7 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
     if fraud_count == 2 || fraud_count == 3 {
         let q_f64: [f64; 14] = std::array::from_fn(|i| q[i] as f64);
         let p_fraud = super::model_gen::predict_fraud(&q_f64);
-        if p_fraud >= 0.25 { 3 } else { 2 }
+        if p_fraud >= 0.50 { 3 } else { 2 }
     } else {
         fraud_count as u8
     }
