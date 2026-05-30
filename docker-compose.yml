@@ -1,0 +1,58 @@
+volumes:
+  sock:
+
+services:
+  lb:
+    image: haproxy:alpine
+    ports:
+      - "9999:9999"
+    volumes:
+      - sock:/run/sock
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - fraud-net
+    deploy:
+      resources:
+        limits:
+          cpus: "0.05"
+          memory: "14MB"
+
+  api1:
+    image: ghcr.io/abeswz/fraud-detection-rinha-backend-2026:b54eda3
+    environment:
+      - SOCK=/run/sock/api1.sock
+    volumes:
+      - sock:/run/sock
+    networks:
+      - fraud-net
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.45"
+          memory: "168MB"
+
+  api2:
+    image: ghcr.io/abeswz/fraud-detection-rinha-backend-2026:b54eda3
+    environment:
+      - SOCK=/run/sock/api2.sock
+    volumes:
+      - sock:/run/sock
+    networks:
+      - fraud-net
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    deploy:
+      resources:
+        limits:
+          cpus: "0.45"
+          memory: "168MB"
+
+networks:
+  fraud-net:
+    driver: bridge
