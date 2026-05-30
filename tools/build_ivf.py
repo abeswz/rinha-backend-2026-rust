@@ -4,15 +4,16 @@
 # dependencies = ["numpy", "faiss-cpu"]
 # ///
 """
-Build IVF2 index from resources/references.json.gz.
+Build IVF3 index from resources/references.json.gz.
 Output: resources/ivf_index.bin
 
-IVF2 binary format (all little-endian):
-  [4B]        magic: IVF2
+IVF3 binary format (all little-endian):
+  [4B]        magic: IVF3
   [4B u32]    n   — total vectors (before padding)
   [4B u32]    k   — number of centroids
   [4B u32]    d   — dimensions (14)
   [d*k*4B]    centroids f32, column-major: centroids[d_idx * k + ci]
+  [k*4B]      radii f32 — per-centroid bounding radius
   [(k+1)*4B]  block_offsets u32 — offsets[ci]..offsets[ci+1] = block range (unit: 8-vec block)
   [total_blocks*8 B] labels u8 — padding slots = 0
   [total_blocks*d*8*2B] blocks i16 — blocks[(block_idx*d+dim)*8+slot], padding = i16::MAX
@@ -81,7 +82,6 @@ def _write_ivf3(
     print("Sorting by cluster...", flush=True)
 
     order = np.argsort(assignments, kind="stable")
-    sorted_clusters = assignments[order]
 
     counts = np.bincount(assignments, minlength=k)
 
