@@ -44,13 +44,13 @@ def quantize(arr: np.ndarray) -> np.ndarray:
     return np.clip(np.round(arr * SCALE), -32768, 32767).astype(np.int16)
 
 
-def _write_ivf2(
+def _write_ivf3(
     vectors: np.ndarray,
     labels: np.ndarray,
     k: int,
     output_path: str,
 ) -> None:
-    """Fit KMeans, build IVF2 binary, write to output_path."""
+    """Fit KMeans, build IVF3 binary (with bounding radii), write to output_path."""
     n, d = vectors.shape
     assert d == D
 
@@ -95,6 +95,19 @@ def _write_ivf2(
         block_offsets[ci + 1] = block_offsets[ci] + ((n_vecs + 7) // 8)
 
     total_blocks = int(block_offsets[-1])
+
+    # Compute per-cluster bounding radii (max L2 dist from centroid to any member)
+    print("Computing bounding radii...", flush=True)
+
+    radii = np.zeros(k, dtype=np.float32)
+    for ci in range(k):
+        start_i = int(cluster_offsets[ci])
+        end_i = int(cluster_offsets[ci + 1])
+        if start_i < end_i:
+            idx = order[start_i:end_i]
+            vecs = vectors[idx]
+            diffs = vecs - centroids[ci]
+            radii[ci] = np.sqrt(np.max(np.sum(diffs**2, axis=1)))
 
     out_labels = np.zeros(total_blocks * 8, dtype=np.uint8)
 
@@ -167,15 +180,16 @@ def _write_ivf2(
     )
 
     with open(output_path, "wb") as f:
-        f.write(b"IVF2")
+        f.write(b"IVF3")
         f.write(struct.pack("<III", n, k, d))
         f.write(centroids_t.astype(np.float32).tobytes())
+        f.write(radii.tobytes())
         f.write(block_offsets.tobytes())
         f.write(out_labels.tobytes())
         f.write(out_blocks.tobytes())
 
 
-def _test_ivf2_roundtrip():
+def _test_ivf3_roundtrip():
     import os
     import tempfile
 
@@ -188,24 +202,32 @@ def _test_ivf2_roundtrip():
         tmp = f.name
 
     try:
-        _write_ivf2(vecs, lbls, k_test, tmp)
+        _write_ivf3(vecs, lbls, k_test, tmp)
         with open(tmp, "rb") as f:
             magic = f.read(4)
-            assert magic == b"IVF2", f"bad magic: {magic}"
+            assert magic == b"IVF3", f"bad magic: {magic}"
             n_out = int.from_bytes(f.read(4), "little")
             k_out = int.from_bytes(f.read(4), "little")
             d_out = int.from_bytes(f.read(4), "little")
             assert n_out == n_test, f"n mismatch: {n_out} != {n_test}"
             assert k_out == k_test, f"k mismatch: {k_out} != {k_test}"
             assert d_out == D, f"d mismatch: {d_out} != {D}"
-        print("PASS: IVF2 roundtrip test")
+            # skip centroids: d * k * 4 bytes
+            f.read(d_out * k_out * 4)
+            # radii: k * 4 bytes
+            radii_bytes = f.read(k_out * 4)
+            assert len(radii_bytes) == k_out * 4, f"radii size mismatch"
+            radii_out = np.frombuffer(radii_bytes, dtype=np.float32)
+            assert np.all(radii_out >= 0.0), "radii must be non-negative"
+            assert np.all(np.isfinite(radii_out)), "radii must be finite"
+        print("PASS: IVF3 roundtrip test")
     finally:
         os.unlink(tmp)
 
 
 if __name__ == "__main__":
     if "--test" in sys.argv:
-        _test_ivf2_roundtrip()
+        _test_ivf3_roundtrip()
         sys.exit(0)
 
     print(f"Loading {INPUT}...", flush=True)
@@ -223,8 +245,8 @@ if __name__ == "__main__":
     if d_check != D:
         sys.exit(f"ERROR: expected D={D}, got {d_check}")
 
-    print(f"Building IVF2 index K={K}...", flush=True)
-    _write_ivf2(vectors, labels, K, str(OUTPUT))
+    print(f"Building IVF3 index K={K}...", flush=True)
+    _write_ivf3(vectors, labels, K, str(OUTPUT))
 
     size_mb = OUTPUT.stat().st_size / 1024**2
     print(f"Done. {OUTPUT} = {size_mb:.1f} MB", flush=True)
