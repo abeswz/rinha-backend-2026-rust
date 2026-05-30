@@ -15,7 +15,7 @@ services:
       resources:
         limits:
           cpus: "0.05"
-          memory: "6MB"
+          memory: "14MB"
 
   api1:
     build: .
@@ -33,7 +33,7 @@ services:
       resources:
         limits:
           cpus: "0.45"
-          memory: "172MB"
+          memory: "168MB"
 
   api2:
     build: .
@@ -51,7 +51,7 @@ services:
       resources:
         limits:
           cpus: "0.45"
-          memory: "172MB"
+          memory: "168MB"
 
 networks:
   fraud-net:
