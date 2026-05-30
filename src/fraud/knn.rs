@@ -3,7 +3,7 @@ use std::cell::UnsafeCell;
 
 pub const FAST_NPROBE: usize = 5;
 pub const FULL_NPROBE: usize = 24;
-const K: usize = 4096; // must match build_index K; guarded by assert in warmup()
+pub const K: usize = 4096; // must match build_index K; guarded by assert in data::init()
 
 thread_local! {
     static DISTS: UnsafeCell<[f32; K]> = const { UnsafeCell::new([0.0f32; K]) };
@@ -20,29 +20,6 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
     }
 }
 
-pub fn warmup() {
-    let ds = crate::fraud::data::dataset();
-    assert_eq!(
-        ds.k, K,
-        "index k={} != compiled K={K}; rebuild index or update K const",
-        ds.k
-    );
-    let mut x = 0x12345678u32;
-    for _ in 0..500 {
-        x ^= x << 13;
-        x ^= x >> 17;
-        x ^= x << 5;
-        let mut q = [0.0f32; 14];
-        let mut s = x;
-        for v in q.iter_mut() {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            *v = (s & 0xFFFF) as f32 / 65535.0;
-        }
-        let _ = knn5_ivf(&q, ds);
-    }
-}
 
 #[inline(always)]
 fn count_fraud(labels: [u8; 5]) -> usize {
@@ -237,9 +214,8 @@ mod tests {
     }
 
     #[test]
-    fn smoke_warmup_and_query() {
+    fn smoke_zero_query() {
         data::init();
-        warmup();
         let q = [0.0f32; 14];
         let ds = data::dataset();
         let result = knn5_ivf(&q, ds);

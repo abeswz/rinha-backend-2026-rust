@@ -84,6 +84,14 @@ fn decode() -> Dataset {
         fill_avec(&mut gz, &mut blocks, block_i16_count);
     }
 
+    // Guard: if index was built with a different K, knn5_ivf silently gives wrong results.
+    assert_eq!(
+        k,
+        crate::fraud::knn::K,
+        "index k={k} != compiled K={}; rebuild index or update K const",
+        crate::fraud::knn::K
+    );
+
     Dataset {
         n,
         k,
