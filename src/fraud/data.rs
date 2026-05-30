@@ -10,6 +10,7 @@ pub struct Dataset {
     pub n: usize,
     pub k: usize,
     pub centroids: AVec<f32, ConstAlign<32>>,
+    pub radii: Vec<f32>,
     pub offsets: Vec<u32>,
     pub labels: Vec<u8>,
     pub blocks: AVec<i16, ConstAlign<32>>,
@@ -23,7 +24,6 @@ pub fn init() {
     DATASET.get_or_init(decode);
 }
 
-// Read `count` elements of T directly into the spare capacity of v (no intermediate buffer).
 unsafe fn fill_vec<T>(r: &mut impl Read, v: &mut Vec<T>, count: usize) {
     let spare = v.spare_capacity_mut();
     assert!(spare.len() >= count);
@@ -36,7 +36,6 @@ unsafe fn fill_vec<T>(r: &mut impl Read, v: &mut Vec<T>, count: usize) {
     v.set_len(v.len() + count);
 }
 
-// Same as fill_vec but for AVec (which has as_mut_ptr + set_len directly).
 unsafe fn fill_avec<T>(r: &mut impl Read, v: &mut AVec<T, ConstAlign<32>>, count: usize) {
     assert!(v.capacity() >= v.len() + count);
     let ptr = v.as_mut_ptr().add(v.len()) as *mut u8;
@@ -53,7 +52,7 @@ fn decode() -> Dataset {
 
     let mut hdr = [0u8; 16];
     r.read_exact(&mut hdr).expect("truncated header");
-    assert_eq!(&hdr[..4], b"IVF2", "bad IVF2 magic");
+    assert_eq!(&hdr[..4], b"IVF3", "bad IVF3 magic");
     let n = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
     let k = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
     let d = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
@@ -63,6 +62,11 @@ fn decode() -> Dataset {
     let mut centroids: AVec<f32, ConstAlign<32>> = AVec::with_capacity(32, centroid_count);
     unsafe {
         fill_avec(&mut r, &mut centroids, centroid_count);
+    }
+
+    let mut radii: Vec<f32> = Vec::with_capacity(k);
+    unsafe {
+        fill_vec(&mut r, &mut radii, k);
     }
 
     let mut offsets: Vec<u32> = Vec::with_capacity(k + 1);
@@ -93,8 +97,26 @@ fn decode() -> Dataset {
         n,
         k,
         centroids,
+        radii,
         offsets,
         labels,
         blocks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fraud::knn::K;
+
+    #[test]
+    fn ivf3_radii_loaded() {
+        init();
+        let ds = dataset();
+        assert_eq!(ds.radii.len(), K, "radii count must equal K");
+        assert!(
+            ds.radii.iter().all(|&r| r >= 0.0 && r.is_finite()),
+            "all radii must be non-negative and finite"
+        );
     }
 }
