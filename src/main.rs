@@ -20,7 +20,6 @@ fn main() {
 
 async fn run() {
     fraud::data::init();
-    fraud::model::init();
     fraud::knn::warmup();
 
     let sock_path = env::sock_path();
