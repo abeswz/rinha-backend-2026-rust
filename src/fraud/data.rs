@@ -1,9 +1,8 @@
 use aligned_vec::{AVec, ConstAlign};
-use flate2::read::GzDecoder;
-use std::io::{BufReader, Read};
+use std::io::{Cursor, Read};
 use std::sync::OnceLock;
 
-static INDEX_GZ: &[u8] = include_bytes!("../../data/index.bin.gz");
+static INDEX_BYTES: &[u8] = include_bytes!("../../resources/ivf_index.bin");
 static DATASET: OnceLock<Dataset> = OnceLock::new();
 
 #[allow(dead_code)]
@@ -13,7 +12,7 @@ pub struct Dataset {
     pub centroids: AVec<f32, ConstAlign<32>>,
     pub offsets: Vec<u32>,
     pub labels: Vec<u8>,
-    pub blocks: AVec<i16, ConstAlign<32>>,
+    pub blocks: AVec<i8, ConstAlign<32>>,
 }
 
 pub fn dataset() -> &'static Dataset {
@@ -50,41 +49,39 @@ unsafe fn fill_avec<T>(r: &mut impl Read, v: &mut AVec<T, ConstAlign<32>>, count
 }
 
 fn decode() -> Dataset {
-    let mut gz = BufReader::new(GzDecoder::new(INDEX_GZ));
+    let mut r = Cursor::new(INDEX_BYTES);
 
     let mut hdr = [0u8; 16];
-    gz.read_exact(&mut hdr).expect("truncated header");
-    assert_eq!(&hdr[..4], b"IVF1", "bad IVF1 magic");
+    r.read_exact(&mut hdr).expect("truncated header");
+    assert_eq!(&hdr[..4], b"IVF2", "bad IVF2 magic");
     let n = u32::from_le_bytes(hdr[4..8].try_into().unwrap()) as usize;
     let k = u32::from_le_bytes(hdr[8..12].try_into().unwrap()) as usize;
     let d = u32::from_le_bytes(hdr[12..16].try_into().unwrap()) as usize;
     assert_eq!(d, 14, "expected d=14, got {d}");
 
-    // All reads go directly into pre-allocated memory. Peak RSS = binary + final arrays only.
     let centroid_count = d * k;
     let mut centroids: AVec<f32, ConstAlign<32>> = AVec::with_capacity(32, centroid_count);
     unsafe {
-        fill_avec(&mut gz, &mut centroids, centroid_count);
+        fill_avec(&mut r, &mut centroids, centroid_count);
     }
 
     let mut offsets: Vec<u32> = Vec::with_capacity(k + 1);
     unsafe {
-        fill_vec(&mut gz, &mut offsets, k + 1);
+        fill_vec(&mut r, &mut offsets, k + 1);
     }
 
     let total_blocks = offsets[k] as usize;
     let mut labels: Vec<u8> = Vec::with_capacity(total_blocks * 8);
     unsafe {
-        fill_vec(&mut gz, &mut labels, total_blocks * 8);
+        fill_vec(&mut r, &mut labels, total_blocks * 8);
     }
 
-    let block_i16_count = total_blocks * d * 8;
-    let mut blocks: AVec<i16, ConstAlign<32>> = AVec::with_capacity(32, block_i16_count);
+    let block_i8_count = total_blocks * d * 8;
+    let mut blocks: AVec<i8, ConstAlign<32>> = AVec::with_capacity(32, block_i8_count);
     unsafe {
-        fill_avec(&mut gz, &mut blocks, block_i16_count);
+        fill_avec(&mut r, &mut blocks, block_i8_count);
     }
 
-    // Guard: if index was built with a different K, knn5_ivf silently gives wrong results.
     assert_eq!(
         k,
         crate::fraud::knn::K,

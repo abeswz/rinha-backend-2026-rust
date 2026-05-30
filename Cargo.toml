@@ -7,16 +7,11 @@ edition = "2021"
 name = "fraud-detection"
 path = "src/main.rs"
 
-[[bin]]
-name = "build_index"
-path = "bin/build_index.rs"
-
 [dependencies]
 tokio       = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
 memchr      = "2"
 mimalloc    = { version = "0.1", default-features = false }
 aligned-vec = "0.6"
-flate2      = { version = "1", default-features = false, features = ["rust_backend"] }
 libc        = "0.2"
 serde       = { version = "1", features = ["derive"] }
 serde_json  = "1"

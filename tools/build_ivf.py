@@ -15,10 +15,10 @@ IVF2 binary format (all little-endian):
   [d*k*4B]    centroids f32, column-major: centroids[d_idx * k + ci]
   [(k+1)*4B]  block_offsets u32 — offsets[ci]..offsets[ci+1] = block range (unit: 8-vec block)
   [total_blocks*8 B] labels u8 — padding slots = 0
-  [total_blocks*d*8*2B] blocks i16 — blocks[(block_idx*d+dim)*8+slot], padding = i16::MAX
+  [total_blocks*d*8*1B] blocks i8 — blocks[(block_idx*d+dim)*8+slot], padding = i8::MAX
 
-Quantization: i16 = round(f32 * 10_000). Range [-3.2768, 3.2767] maps exactly.
-Sentinel -1.0 (null last_transaction) → -10000. Fits in i16.
+Quantization: i8 = round(f32 * 100). All features in [-1.0, 1.0] → i8 [-100, 100].
+Sentinel -1.0 (null last_transaction) → -100. Fits in i8.
 """
 
 import gzip
@@ -37,12 +37,12 @@ D = 14
 BATCH_SIZE = 50_000
 N_INIT = 3
 RANDOM_STATE = 42
-SCALE = 10_000
+SCALE = 100
 
 
 def quantize(arr: np.ndarray) -> np.ndarray:
-    """f32 → i16 via round(x * 10000). Clips to i16 range."""
-    return np.clip(np.round(arr * SCALE), -32768, 32767).astype(np.int16)
+    """f32 → i8 via round(x * 100). All features in [-1.0, 1.0] → [-100, 100]."""
+    return np.clip(np.round(arr * SCALE), -128, 127).astype(np.int8)
 
 
 def _write_ivf2(vectors: np.ndarray, labels: np.ndarray, k: int, output_path: str) -> None:
@@ -75,7 +75,7 @@ def _write_ivf2(vectors: np.ndarray, labels: np.ndarray, k: int, output_path: st
     padded_n = total_blocks * 8
 
     out_labels = np.zeros(padded_n, dtype=np.uint8)
-    out_blocks = np.full(total_blocks * d * 8, fill_value=32767, dtype=np.int16)
+    out_blocks = np.full(total_blocks * d * 8, fill_value=127, dtype=np.int8)
 
     for ci in range(k):
         block_start = int(block_offsets[ci])

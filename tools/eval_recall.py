@@ -26,9 +26,9 @@ REFS_PATH = ROOT / "resources" / "references.json.gz"
 TEST_PATH = ROOT / "test" / "test-data.json"
 
 K_NEIGHBORS = 5
-FAST_NPROBE = 5
+FAST_NPROBE = 8
 FULL_NPROBE = 24
-SCALE = 10_000
+SCALE = 100
 
 # ── vectorization (mirrors vector.rs exactly) ──────────────────────────────
 
@@ -133,7 +133,7 @@ def load_ivf_index(path: Path) -> dict:
     total_blocks = int(block_offsets[-1])
     labels = np.frombuffer(data, dtype=np.uint8, count=total_blocks * 8, offset=off).copy()
     off += total_blocks * 8
-    blocks = np.frombuffer(data, dtype="<i2", count=total_blocks * d * 8, offset=off).reshape(total_blocks, d, 8).copy()
+    blocks = np.frombuffer(data, dtype="int8", count=total_blocks * d * 8, offset=off).reshape(total_blocks, d, 8).copy()
     print(f"  IVF: n={n}, k={k}, d={d}, total_blocks={total_blocks}", file=sys.stderr)
     return {"n": n, "k": k, "d": d, "centroids": centroids, "block_offsets": block_offsets,
             "labels": labels, "blocks": blocks}
