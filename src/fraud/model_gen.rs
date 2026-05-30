@@ -39776,3 +39776,7 @@ pub fn sigmoid(x: f64) -> f64 {
     }
     1.0_f64 / (1.0_f64 + (-x).exp())
 }
+
+pub fn predict_fraud(input: &[f64]) -> f64 {
+    score(input.to_vec())[1]
+}

@@ -154,7 +154,14 @@ def export_rust(model: lgb.LGBMClassifier) -> None:
         "#![allow(unused_assignments)]\n"
         "#![allow(unused_variables)]\n"
     )
-    code = allow_attrs + code
+    # Wrapper: m2cgen score() takes Vec<f64> and returns [P(legit), P(fraud)].
+    # predict_fraud() provides the &[f64] -> f64 interface knn.rs expects.
+    wrapper = (
+        "\npub fn predict_fraud(input: &[f64]) -> f64 {\n"
+        "    score(input.to_vec())[1]\n"
+        "}\n"
+    )
+    code = allow_attrs + code + wrapper
     rust_path = ROOT / "src" / "fraud" / "model_gen.rs"
     rust_path.write_text(code)
     size = rust_path.stat().st_size
