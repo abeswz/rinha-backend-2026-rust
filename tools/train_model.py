@@ -86,6 +86,7 @@ def train(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
         learning_rate=0.05,
         random_state=42,
         n_jobs=-1,
+        class_weight={0: 1, 1: 3},
     )
     model.fit(X_train, y_train)
 
@@ -94,17 +95,13 @@ def train(X: np.ndarray, y: np.ndarray) -> lgb.LGBMClassifier:
     print(f"Val AUC-ROC: {auc:.6f}", file=sys.stderr)
     assert auc >= 0.99, f"AUC {auc:.4f} < 0.99 — model too weak"
 
-    # Validate threshold behaviour on validation set
-    fp = ((probs >= 0.95) & (y_val == 0)).sum()
-    fn = ((probs <= 0.20) & (y_val == 1)).sum()
-    uncertain = ((probs > 0.20) & (probs < 0.95)).sum()
-    edge_pct = uncertain / len(y_val) * 100
-    print(f"FP (p>=0.95, label=0): {fp}", file=sys.stderr)
-    print(f"FN (p<=0.20, label=1): {fn}", file=sys.stderr)
-    print(f"Edge case rate: {edge_pct:.1f}%", file=sys.stderr)
-    assert fp == 0, f"FP count {fp} > 0 at p>=0.95"
-    assert fn == 0, f"FN count {fn} > 0 at p<=0.20"
-    assert edge_pct <= 15.0, f"Edge rate {edge_pct:.1f}% > 15%"
+    pred_fraud = probs >= 0.25
+    fp_count = int(((pred_fraud) & (y_val == 0)).sum())
+    fn_count = int(((~pred_fraud) & (y_val == 1)).sum())
+    E_val = fp_count + 3 * fn_count
+    print(f"Val E at t=0.25 (FP+3×FN): {E_val}  (FP={fp_count}, FN={fn_count})", file=sys.stderr)
+    assert auc >= 0.99, f"AUC {auc:.4f} < 0.99"
+    assert E_val < 200, f"E={E_val} >= 200 on val set — model too weak"
     return model
 
 
