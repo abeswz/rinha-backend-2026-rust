@@ -15,10 +15,11 @@ IVF2 binary format (all little-endian):
   [d*k*4B]    centroids f32, column-major: centroids[d_idx * k + ci]
   [(k+1)*4B]  block_offsets u32 — offsets[ci]..offsets[ci+1] = block range (unit: 8-vec block)
   [total_blocks*8 B] labels u8 — padding slots = 0
-  [total_blocks*d*8*1B] blocks i8 — blocks[(block_idx*d+dim)*8+slot], padding = i8::MAX
+  [total_blocks*d*8*2B] blocks i16 — blocks[(block_idx*d+dim)*8+slot], padding = i16::MAX
 
-Quantization: i8 = round(f32 * 100). All features in [-1.0, 1.0] → i8 [-100, 100].
-Sentinel -1.0 (null last_transaction) → -100. Fits in i8.
+Quantization: i16 = round(f32 * 3000). All features in [-1.0, 1.0] → i16 [-3000, 3000].
+scale=3000 chosen so max squared-distance sum (14 × 6000² = 504M) fits in i32 accumulator.
+Sentinel -1.0 (null last_transaction) → -3000. Fits in i16.
 """
 
 import gzip
@@ -35,12 +36,12 @@ OUTPUT = Path("resources/ivf_index.bin")
 K = 4096
 D = 14
 RANDOM_STATE = 42
-SCALE = 100
+SCALE = 3000
 
 
 def quantize(arr: np.ndarray) -> np.ndarray:
-    """f32 → i8 via round(x * 100). All features in [-1.0, 1.0] → [-100, 100]."""
-    return np.clip(np.round(arr * SCALE), -128, 127).astype(np.int8)
+    """f32 → i16 via round(x * 3000). All features in [-1.0, 1.0] → [-3000, 3000]."""
+    return np.clip(np.round(arr * SCALE), -32768, 32767).astype(np.int16)
 
 
 def _write_ivf2(
@@ -99,8 +100,8 @@ def _write_ivf2(
 
     out_blocks = np.full(
         total_blocks * d * 8,
-        fill_value=127,
-        dtype=np.int8,
+        fill_value=32767,
+        dtype=np.int16,
     )
 
     print(
@@ -138,7 +139,7 @@ def _write_ivf2(
                 cluster_vectors,
                 ((0, pad), (0, 0)),
                 mode="constant",
-                constant_values=127,
+                constant_values=32767,
             )
 
         labels_2d = cluster_labels.reshape(

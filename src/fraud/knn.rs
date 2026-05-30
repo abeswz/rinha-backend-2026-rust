@@ -1,7 +1,7 @@
 use crate::fraud::data::Dataset;
 use std::cell::UnsafeCell;
 
-pub const FAST_NPROBE: usize = 8;
+pub const FAST_NPROBE: usize = 16;
 pub const FULL_NPROBE: usize = 24;
 pub const K: usize = 4096; // must match build_index K; guarded by assert in data::init()
 
@@ -19,7 +19,6 @@ pub fn knn5_ivf(q: &[f32; 14], ds: &Dataset) -> u8 {
         fraud_count as u8
     }
 }
-
 
 #[inline(always)]
 fn count_fraud(labels: [u8; 5]) -> usize {
@@ -49,7 +48,6 @@ unsafe fn centroid_dists_avx2(q: &[f32; 14], centroids: *const f32, dists: *mut 
         }
     }
 }
-
 
 fn top_n_centroids_fast(dists: &[f32; K], nprobe: usize) -> [u16; FULL_NPROBE] {
     let nprobe = nprobe.min(FULL_NPROBE);
@@ -90,22 +88,21 @@ unsafe fn probe_avx2(q: &[f32; 14], ds: &Dataset, nprobe: usize) -> [u8; 5] {
     scan_blocks_avx2(q, ds, &top[..nprobe])
 }
 
-
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 5] {
     use std::arch::x86_64::*;
 
-    // Pre-quantize query to i16 (values ∈ [-100,100]; diff ∈ [-200,200] needs i16 to avoid overflow)
+    // Pre-quantize query to i16 (values ∈ [-3000,3000]; diff ∈ [-6000,6000] fits in i16)
     let mut q_i16 = [0i16; 14];
     for d in 0..14 {
-        q_i16[d] = (q[d] * 100.0).round() as i16;
+        q_i16[d] = (q[d] * 3000.0).round() as i16;
     }
 
     const K_NEIGHBORS: usize = 5;
     let mut top: [(u32, u8); K_NEIGHBORS] = [(u32::MAX, 0u8); K_NEIGHBORS];
     let mut worst_u32: u32 = u32::MAX;
-    let bp = ds.blocks.as_ptr(); // *const i8
+    let bp = ds.blocks.as_ptr() as *const i8; // byte-level pointer for block addressing
     let lp = ds.labels.as_ptr();
 
     for &ci in probed {
@@ -115,22 +112,21 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 
 
         'block: for block_i in block_start..block_end {
             if block_i + 4 < block_end {
-                _mm_prefetch(bp.add((block_i + 4) * 112) as *const i8, _MM_HINT_T0);
+                _mm_prefetch(bp.add((block_i + 4) * 224) as *const i8, _MM_HINT_T0);
             }
 
-            // Each block: 8 slots × 14 dims = 112 bytes
-            let bb = block_i * 112;
+            // Each block: 8 slots × 14 dims × 2 bytes (i16) = 224 bytes
+            let bb = block_i * 224;
             let mut acc = _mm256_setzero_si256(); // 8 × i32 squared-distance accumulators
 
             macro_rules! acc_dim {
                 ($d:expr) => {{
-                    let raw = _mm_loadl_epi64(bp.add(bb + $d * 8) as *const __m128i);
-                    let v16 = _mm_cvtepi8_epi16(raw);            // 8×i8 → 8×i16
-                    let q16 = _mm_set1_epi16(q_i16[$d]);         // broadcast query value
-                    let diff = _mm_sub_epi16(q16, v16);          // 8×i16 diffs ∈ [-200,200]
-                    let diff32 = _mm256_cvtepi16_epi32(diff);    // 8×i32
-                    let sq = _mm256_mullo_epi32(diff32, diff32); // 8×i32 squares ≤ 40000
-                    acc = _mm256_add_epi32(acc, sq);             // max sum 14×40000=560000 < i32::MAX
+                    let v16 = _mm_loadu_si128(bp.add(bb + $d * 16) as *const __m128i); // 8×i16
+                    let q16 = _mm_set1_epi16(q_i16[$d]); // broadcast query value
+                    let diff = _mm_sub_epi16(q16, v16); // 8×i16 diffs ∈ [-6000,6000]
+                    let diff32 = _mm256_cvtepi16_epi32(diff); // 8×i32
+                    let sq = _mm256_mullo_epi32(diff32, diff32); // 8×i32 squares ≤ 36000000
+                    acc = _mm256_add_epi32(acc, sq); // max sum 14×36000000=504000000 < i32::MAX
                 }};
             }
 
@@ -145,7 +141,7 @@ unsafe fn scan_blocks_avx2(q: &[f32; 14], ds: &Dataset, probed: &[u16]) -> [u8; 
 
             // Early exit: if no vector can beat current worst after 8 dims, skip remaining 6
             if worst_u32 < u32::MAX {
-                // worst_u32 ≤ 560000 < i32::MAX so cast is safe; signed cmp works for non-negative values
+                // worst_u32 ≤ 504000000 < i32::MAX so cast is safe; signed cmp works for non-negative values
                 let threshold = _mm256_set1_epi32(worst_u32 as i32);
                 let cmp_can_win = _mm256_cmpgt_epi32(threshold, acc); // threshold > acc → might win
                 if _mm256_movemask_epi8(cmp_can_win) == 0 {
@@ -230,11 +226,17 @@ mod tests {
     fn model_gen_sanity() {
         let fraud_q = [1.0f64; 14];
         let p_fraud = crate::fraud::model_gen::predict_fraud(&fraud_q);
-        assert!(p_fraud > 0.5, "all-ones features got P(fraud)={p_fraud:.4}, expected > 0.5");
+        assert!(
+            p_fraud > 0.5,
+            "all-ones features got P(fraud)={p_fraud:.4}, expected > 0.5"
+        );
 
         let legit_q = [0.0f64; 14];
         let p_legit = crate::fraud::model_gen::predict_fraud(&legit_q);
-        assert!(p_legit < 0.5, "all-zeros features got P(fraud)={p_legit:.4}, expected < 0.5");
+        assert!(
+            p_legit < 0.5,
+            "all-zeros features got P(fraud)={p_legit:.4}, expected < 0.5"
+        );
     }
 
     #[test]
@@ -242,14 +244,19 @@ mod tests {
         data::init();
         let ds = data::dataset();
         let test_queries: &[[f32; 14]] = &[
-            [0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5, 1.0, 0.0, 1.0, 0.5, 0.5],
-            [0.3, 0.1, 0.3, 0.6, 0.4, 0.2, 0.1, 0.3, 0.4, 0.0, 1.0, 0.0, 0.3, 0.1],
-            [0.8, 0.0, 0.8, 0.3, 0.7, 0.5, 0.5, 0.8, 0.3, 1.0, 1.0, 1.0, 0.8, 0.0],
+            [
+                0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.5, 0.5, 1.0, 0.0, 1.0, 0.5, 0.5,
+            ],
+            [
+                0.3, 0.1, 0.3, 0.6, 0.4, 0.2, 0.1, 0.3, 0.4, 0.0, 1.0, 0.0, 0.3, 0.1,
+            ],
+            [
+                0.8, 0.0, 0.8, 0.3, 0.7, 0.5, 0.5, 0.8, 0.3, 1.0, 1.0, 1.0, 0.8, 0.0,
+            ],
         ];
         for q in test_queries {
             let result = knn5_ivf(q, ds);
             assert!(result <= 5, "knn5_ivf returned {result} (must be 0..=5)");
         }
     }
-
 }

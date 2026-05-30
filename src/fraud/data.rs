@@ -12,7 +12,7 @@ pub struct Dataset {
     pub centroids: AVec<f32, ConstAlign<32>>,
     pub offsets: Vec<u32>,
     pub labels: Vec<u8>,
-    pub blocks: AVec<i8, ConstAlign<32>>,
+    pub blocks: AVec<i16, ConstAlign<32>>,
 }
 
 pub fn dataset() -> &'static Dataset {
@@ -76,10 +76,10 @@ fn decode() -> Dataset {
         fill_vec(&mut r, &mut labels, total_blocks * 8);
     }
 
-    let block_i8_count = total_blocks * d * 8;
-    let mut blocks: AVec<i8, ConstAlign<32>> = AVec::with_capacity(32, block_i8_count);
+    let block_i16_count = total_blocks * d * 8;
+    let mut blocks: AVec<i16, ConstAlign<32>> = AVec::with_capacity(32, block_i16_count);
     unsafe {
-        fill_avec(&mut r, &mut blocks, block_i8_count);
+        fill_avec(&mut r, &mut blocks, block_i16_count);
     }
 
     assert_eq!(
