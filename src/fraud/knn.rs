@@ -84,6 +84,8 @@ unsafe fn scan_exact_avx2(
     use std::arch::x86_64::*;
 
     // Pre-quantize query to i16
+    // Scale=3000, features in [-1,1] → i16 in [-3000,3000]. Max diff=6000 (fits i16).
+    // Max sq diff = 36_000_000 < i32::MAX. Max sum over 14 dims = 504_000_000 < i32::MAX.
     let mut q_i16 = [0i16; 14];
     for d in 0..14 {
         q_i16[d] = (q[d] * 3000.0).round() as i16;
@@ -104,7 +106,7 @@ unsafe fn scan_exact_avx2(
         let worst_f32_sq = worst_i16_sq as f32 / 9_000_000.0_f32;
         let lb = (centroid_dists_sq[ci].sqrt() - ds.radii[ci]).max(0.0);
         if lb * lb > worst_f32_sq {
-            break 'cluster;
+            continue 'cluster;
         }
 
         let block_start = ds.offsets[ci] as usize;
