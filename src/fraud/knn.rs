@@ -226,5 +226,15 @@ mod tests {
         assert!(result <= 5, "knn5_ivf must return 0..=5, got {result}");
     }
 
+    #[test]
+    fn model_gen_sanity() {
+        let fraud_q = [1.0f64; 14];
+        let p_fraud = crate::fraud::model_gen::predict_fraud(&fraud_q);
+        assert!(p_fraud > 0.5, "all-ones features got P(fraud)={p_fraud:.4}, expected > 0.5");
+
+        let legit_q = [0.0f64; 14];
+        let p_legit = crate::fraud::model_gen::predict_fraud(&legit_q);
+        assert!(p_legit < 0.5, "all-zeros features got P(fraud)={p_legit:.4}, expected < 0.5");
+    }
 
 }
