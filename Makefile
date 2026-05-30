@@ -46,12 +46,14 @@ submission: clean info.json
 	@ORIG=$$(git rev-parse --abbrev-ref HEAD); \
 	sed 's|build: \.|image: $(IMAGE)|' docker-compose.yml > /tmp/sub-compose.yml; \
 	cp info.json /tmp/sub-info.json; \
+	cp haproxy.cfg /tmp/sub-haproxy.cfg; \
 	git checkout --orphan submission-tmp; \
 	git rm -rf . > /dev/null 2>&1; \
 	cp /tmp/sub-compose.yml docker-compose.yml; \
 	cp /tmp/sub-info.json info.json; \
-	git add docker-compose.yml info.json; \
-	git commit -m "submission: docker-compose.yml, info.json"; \
+	cp /tmp/sub-haproxy.cfg haproxy.cfg; \
+	git add docker-compose.yml info.json haproxy.cfg; \
+	git commit -m "submission: docker-compose.yml, haproxy.cfg, info.json"; \
 	git branch -D submission 2>/dev/null || true; \
 	git branch -m submission-tmp submission; \
 	git push origin submission --force; \
