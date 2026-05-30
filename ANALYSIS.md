@@ -176,3 +176,189 @@ Steps 1+2 are prerequisites for 3 (index rebuild needed for both). Steps 3+4 are
 **p99 improved** from 210ms to 99ms (+1 point in log scale) — spawn_blocking bottleneck eliminated. LightGBM model removed (was causing I-cache pollution). The FP count (23) is identical to 87ae940, suggesting FP comes from dataset characteristics, not model interference — it's an IVF recall problem present in both versions.
 
 **Next target**: Fix IVF recall (path to FP=0) + reduce p99 to 10ms → projected score ~5000.
+
+## Para guia
+Conversa inicial foi esta e resposta:
+para melhorar ainda mais isso, aqui está o conversamos, sua mensagem:           
+  Estado atual — números concretos                                                
+                                                                                  
+    N = 3,000,000 vetores  D = 14  K = 4096 centroids                             
+    Avg cluster size: 3M / 4096 ≈ 732 vetores = 92 blocos (8-vec/bloco)           
+                                                                                  
+    Custo por request (estimativa de SIMD ops):                                   
+                                                                                  
+    ┌───────────────────────────┬─────────────────┬──────────────────┐            
+    │           Fase            │ Fast (NPROBE=5) │ Full (NPROBE=24) │            
+    ├───────────────────────────┼─────────────────┼──────────────────┤            
+    │ Centroid scan (AVX2)      │ ~41K ops        │ ~41K ops         │            
+    ├───────────────────────────┼─────────────────┼──────────────────┤            
+    │ Top-N selection (escalar) │ ~20K ops        │ ~20K ops         │            
+    ├───────────────────────────┼─────────────────┼──────────────────┤            
+    │ Block scan (AVX2)         │ ~18K ops        │ ~88K ops         │            
+    ├───────────────────────────┼─────────────────┼──────────────────┤            
+    │ Total                     │ ~79K ops        │ ~149K ops        │            
+    └───────────────────────────┴─────────────────┴──────────────────┘            
+                                                                                  
+    A diferença entre os dois caminhos é quase 2x. A pergunta central que não     
+    sabemos responder ainda: que % das requests cai no caminho full?              
+                                                                                  
+    ---                                                                           
+    Os 3 caminhos que você identificou — análise                                  
+                                                                                  
+    Caminho 1: Como buildamos o índice (qualidade dos centroids)                  
+                                                                                  
+    Problema crítico do builder atual (bin/build_index.rs):                       
+                                                                                  
+    // Inicializa KMeans++ com sample de apenas 50k de 3M                         
+    let mut centroids = kmeans_plus_plus_init(&vecs, K, INIT_SAMPLE);             
+    // 25 Lloyd iterations sobre TODOS os 3M                                      
+    for iter in 0..LLOYD_ITERS { ... }                                            
+                                                                                  
+    A inicialização ruim com seed LCG fixo (0xdeadbeef) pode gerar centróides     
+    subótimos. Centróides ruins → clusters impuros (mistura fraud/legit) → mais   
+    requests caindo em fraud_count==2||3 → mais NPROBE=24.                        
+                                                                                  
+    O builder Python (build_ivf.py) usa MiniBatchKMeans do sklearn com N_INIT=3 — 
+    gera centróides de qualidade superior, mas produz formato IVF2 que o runtime  
+  não                                                                             
+     lê.                                                                          
+                                                                                  
+    Oportunidade real: Atualizar o runtime para ler IVF2 (ou adaptar o Python     
+    builder para escrever IVF1). Estimar ganho: 10-30% menos requests no full     
+  probe                                                                           
+    path.                                                                         
+                                                                                  
+    ---                                                                           
+    Caminho 2: Como carregamos em memória                                         
+                                                                                  
+    Isso já está otimizado ao máximo:                                             
+                                                                                  
+    - include_bytes! — índice embedded no binário, sem I/O em runtime             
+    - AVec<_, ConstAlign<32>> — alinhamento 32-byte para AVX2                     
+    - fill_avec / fill_vec — popula direto na memória final, zero cópia           
+    intermediária                                                                 
+    - GzDecoder na startup apenas — nenhum I/O em hot path                        
+                                                                                  
+    Não tem o que fazer aqui. Está ideal.                                         
+                                                                                  
+    ---                                                                           
+    Caminho 3: Algoritmo de busca vetorial                                        
+                                                                                  
+    3a. Top-N centroid selection — gargalo oculto                                 
+                                                                                  
+    fn top_n_centroids_fast(dists: &[f32; K], nprobe: usize) -> [u16;             
+  FULL_NPROBE] {                                                                  
+        // insertion sort sobre 4096 elementos para encontrar top-24              
+        // O(K * NPROBE) = 4096 * 24 ≈ 98K operações, com rotate_right            
+                                                                                  
+    Isso é escalar puro. Para o fast path (NPROBE=5) o centroid scan + top-N      
+    representa mais de 75% do custo total. Alternativas:                          
+                                                                                  
+    - PDQ / nth_element: O(K) average, ~4K ops                                    
+    - SIMD top-N: comparar 8 distâncias por vez, manter heap de 24 com AVX2       
+                                                                                  
+    3b. Quantização i8 — viável para este dataset                                 
+                                                                                  
+    Todas as 14 features têm range [-1.0, 1.0] — todas cabem em i8 com scale=100: 
+                                                                                  
+    dim 0: [0.001, 1.0]  ✓                                                        
+    dim 5: [-1.0, 0.5]   ✓                                                        
+    dim13: [0.002, 0.05]  ← problema: só 5 valores distintos com scale=100        
+                                                                                  
+    dim13 tem std=0.0146 — quase sem variância, baixo poder discriminativo. Com   
+  i8                                                                              
+    você perde precisão exatamente onde ela menos importa. Gain: AVX2 processa 32 
+   i8                                                                             
+     vs 16 i16 = 2x throughput no block scan.                                     
+                                                                                  
+    Risco: impacto em FP/FN precisa ser medido empiricamente antes de usar.       
+                                                                                  
+    3c. K tuning — sweet spot                                                     
+                                                                                  
+    K=4096: centroid scan = 512 SIMD iters, avg_cluster = 92 blocos               
+    K=8192: centroid scan = 1024 SIMD iters, avg_cluster = 46 blocos              
+                                                                                  
+    Com K=8192 e NPROBE=10, é possível ter recall equivalente a K=4096 +          
+  NPROBE=24                                                                       
+    com metade do block scan. Mas centroid scan dobra. Precisa medir recall ×     
+  speed                                                                           
+    por configuração.                                                             
+                                                                                  
+    ---                                                                           
+    Minha recomendação — ordem de prioridade                                      
+                                                                                  
+    1. Instrumentar a ambiguity rate (antes de qualquer coisa)                    
+    Adicionar um contador atômico que mede % de requests que entram no full       
+  probe.                                                                          
+    Se for < 5%, o full path não importa. Se for > 30%, é o principal problema.   
+                                                                                  
+    2. Build melhor com Python/sklearn → IVF2 + adaptar runtime                   
+    Maior potencial de ganho sem mudar o algoritmo de busca. O sklearn            
+    MiniBatchKMeans com N_INIT=3 produz centróides muito melhores que 25 Lloyd    
+    iterations sobre seed ruim.                                                   
+                                                                                  
+    3. Vectorizar top-N selection                                                 
+    Mudar top_n_centroids_fast de insertion sort para partial sort                
+    (select_nth_unstable do Rust, que usa PDQ pattern = O(K) expected). Uma linha 
+   de                                                                             
+     mudança, ganho de ~20% no fast path.                                         
+                                                                                  
+    4. K=8192 benchmark                                                           
+    Testar se K maior com NPROBE menor tem melhor tradeoff. Mudança no builder e  
+  no                                                                              
+    compile-time const K.                                                         
+                                                                                  
+    5. i8 quantization (só depois de medir impacto em accuracy)                   
+                                                                                  
+    ---                                                                           
+    O que NÃO vale a pena                                                         
+                                                                                  
+    - HNSW: N=3M, D=14 — seria 1.2GB de grafo. Inviável com 168MB de RAM.         
+    - Melhorar carregamento de memória: já no máximo.                             
+    - HTTP/transport: correto, não é o gargalo.                                   
+                                                                                  
+    O maior leverage está na qualidade dos centróides (build) e na seleção do     
+  top-N                                                                           
+    (search). Concordo com sua análise dos 3 caminhos, mas o segundo (memória) já 
+    está resolvido.                                                               
+                                                                                  
+  minha resposta:                                                                 
+  Concordo com o que explorou, e aqui tenho alguns guias e também o resultado do  
+                                                                                  
+    teste remoto.                                                                 
+                                                                                  
+                                                                                  
+                                                                                  
+    Sobre sua recomendação, eu não faria o Instrumentar a ambiguity rate, acho    
+  que                                                                             
+    não temos necessidade disso, acho que estamos solidos com o caso.             
+                                                                                  
+                                                                                  
+                                                                                  
+    Gosto muito disso que levantou no "Build melhor com Python/sklearn → IVF2 +   
+                                                                                  
+    adaptar runtime", me parece que esta adaptação pode melhorar e muito como     
+                                                                                  
+    tratamos o indice e utilizamos o que o python fez de melhor.                  
+                                                                                  
+                                                                                  
+                                                                                  
+    Com isso cobrimos melhorias para como buildamos o índice, e como lemos ele,   
+                                                                                  
+    correto?                                                                      
+                                                                                  
+                                                                                  
+                                                                                  
+    Melhoria no algoritmo de busca vetorial me parece necessaria, além disso e    
+                                                                                  
+    muito importante a quantizacao dos vetores para i8.                           
+                                                                                  
+                                                                                  
+                                                                                  
+    Sobre o full patch, seria interassante nos proteger usando o máximo que       
+                                                                                  
+    podemos, sem impactar performance, para tentar garantir que a maioria dos     
+  casos                                                                           
+     não caia no full path, assim tentamos ter a maior cobertura possível,        
+  chegando                                                                        
+     proximo do limite de impacto de performance, para não afetar.

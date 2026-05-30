@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["numpy>=1.26"]
+# dependencies = ["numpy>=1.26", "faiss-cpu"]
 # ///
 """
 Exp 2: IVF recall benchmark.
@@ -18,6 +18,7 @@ import struct
 import sys
 from pathlib import Path
 
+import faiss
 import numpy as np
 
 ROOT = Path(__file__).parent.parent
@@ -138,15 +139,6 @@ def load_ivf_index(path: Path) -> dict:
     return {"n": n, "k": k, "d": d, "centroids": centroids, "block_offsets": block_offsets,
             "labels": labels, "blocks": blocks}
 
-# ── brute-force top-5 ─────────────────────────────────────────────────────
-
-def brute_force_knn5(q: np.ndarray, all_vecs: np.ndarray, all_labels: np.ndarray) -> np.ndarray:
-    diffs = all_vecs - q
-    dists = (diffs * diffs).sum(axis=1)
-    idx = np.argpartition(dists, K_NEIGHBORS)[:K_NEIGHBORS]
-    idx = idx[np.argsort(dists[idx])]
-    return all_labels[idx]
-
 # ── IVF top-5 ─────────────────────────────────────────────────────────────
 
 def ivf_knn5(q: np.ndarray, idx: dict, nprobe: int) -> np.ndarray:
@@ -205,14 +197,22 @@ def main() -> None:
     test_entries = json.loads(TEST_PATH.read_text())["entries"]
     print(f"  {len(test_entries)} test entries", file=sys.stderr)
 
+    # Build faiss index once, batch all BF queries
+    print("Building faiss brute-force index...", file=sys.stderr)
+    fi = faiss.IndexFlatL2(all_vecs.shape[1])
+    fi.add(all_vecs)
+    queries = np.stack([vectorize(e["request"]) for e in test_entries])
+    _, bf_indices = fi.search(queries, K_NEIGHBORS)  # (N, 5)
+    bf_results = all_labels[bf_indices]  # (N, 5)
+
     total = fast_agree = full_agree = fast_flips = full_flips = 0
     flip_details = []
 
-    for entry in test_entries:
+    for i, entry in enumerate(test_entries):
         req = entry["request"]
-        q = vectorize(req)
+        q = queries[i]
+        bf = bf_results[i]
 
-        bf = brute_force_knn5(q, all_vecs, all_labels)
         fast = ivf_knn5(q, ivf, FAST_NPROBE)
         full = ivf_knn5(q, ivf, FULL_NPROBE)
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["numpy", "scikit-learn"]
+# dependencies = ["numpy", "faiss-cpu"]
 # ///
 """
 Build IVF2 index from resources/references.json.gz.
@@ -27,15 +27,13 @@ import struct
 import sys
 from pathlib import Path
 
+import faiss
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans
 
 INPUT = Path("resources/references.json.gz")
 OUTPUT = Path("resources/ivf_index.bin")
 K = 4096
 D = 14
-BATCH_SIZE = 50_000
-N_INIT = 3
 RANDOM_STATE = 42
 SCALE = 100
 
@@ -50,15 +48,11 @@ def _write_ivf2(vectors: np.ndarray, labels: np.ndarray, k: int, output_path: st
     n, d = vectors.shape
     assert d == D
 
-    km = MiniBatchKMeans(
-        n_clusters=k,
-        batch_size=BATCH_SIZE,
-        n_init=N_INIT,
-        random_state=RANDOM_STATE,
-        verbose=0,
-    )
-    assignments = km.fit_predict(vectors)
-    centroids = km.cluster_centers_.astype(np.float32)  # shape: (k, d)
+    km = faiss.Kmeans(d, k, niter=20, nredo=1, verbose=True, seed=RANDOM_STATE)
+    km.train(vectors)
+    centroids = km.centroids  # shape: (k, d), float32
+    _, asn = km.index.search(vectors, 1)
+    assignments = asn.flatten()
 
     # Group vector indices by cluster
     cluster_vecs: list[list[int]] = [[] for _ in range(k)]
