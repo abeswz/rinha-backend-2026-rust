@@ -11,10 +11,6 @@ path = "src/main.rs"
 name = "build_index"
 path = "bin/build_index.rs"
 
-[[bin]]
-name = "lb"
-path = "bin/lb.rs"
-
 [dependencies]
 tokio       = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
 memchr      = "2"

@@ -3,12 +3,12 @@ volumes:
 
 services:
   lb:
-    build: .
-    command: ["/lb"]
+    image: haproxy:alpine
     ports:
       - "9999:9999"
     volumes:
       - sock:/run/sock
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks:
       - fraud-net
     deploy:
@@ -32,7 +32,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.475"
+          cpus: "0.45"
           memory: "172MB"
 
   api2:
@@ -50,7 +50,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: "0.475"
+          cpus: "0.45"
           memory: "172MB"
 
 networks:
