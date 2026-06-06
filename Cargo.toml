@@ -4,17 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "fraud-detection"
+name = "fraud-api"
 path = "src/main.rs"
 
+[[bin]]
+name = "lb"
+path = "bin/lb.rs"
+
 [dependencies]
-tokio       = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "macros", "net", "io-util"] }
-memchr      = "2"
-mimalloc    = { version = "0.1", default-features = false }
-aligned-vec = "0.6"
-libc        = "0.2"
-serde       = { version = "1", features = ["derive"] }
-serde_json  = "1"
+memmap2    = "0.9"
+memchr     = "2"
+libc       = "0.2"
+mimalloc   = { version = "0.1", default-features = false }
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [profile.release]
 opt-level       = 3
