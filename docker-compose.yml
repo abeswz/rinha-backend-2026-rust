@@ -8,9 +8,7 @@ volumes:
 
 services:
   lb:
-    build:
-      context: ../../../..
-      dockerfile: fraud-detection/.claude/worktrees/rust-port-go-strategy/Dockerfile
+    build: .
     entrypoint: ["/lb"]
     ports:
       - "9999:9999"
@@ -30,9 +28,7 @@ services:
           memory: "6MB"
 
   api1:
-    build:
-      context: ../../../..
-      dockerfile: fraud-detection/.claude/worktrees/rust-port-go-strategy/Dockerfile
+    build: .
     entrypoint: ["/fraud-api"]
     environment:
       - SOCK=/run/sock/api1.sock
@@ -54,9 +50,7 @@ services:
           memory: "172MB"
 
   api2:
-    build:
-      context: ../../../..
-      dockerfile: fraud-detection/.claude/worktrees/rust-port-go-strategy/Dockerfile
+    build: .
     entrypoint: ["/fraud-api"]
     environment:
       - SOCK=/run/sock/api2.sock

@@ -120,6 +120,7 @@ secrets/
 
 resources/ivf_index.bin
 resources/refs.bin
+index/index_p*.bin
 
 # =========================================================
 # Python
