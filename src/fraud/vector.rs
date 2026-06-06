@@ -1,53 +1,61 @@
 use crate::fraud::json::Payload;
 
 #[inline(always)]
-pub fn round4(x: f32) -> f32 {
-    (x * 10000.0).round() * 0.0001
+fn clamp01_i16(x: f32) -> i16 {
+    (x.clamp(0.0, 1.0) * 10000.0).round() as i16
 }
 
 #[inline(always)]
-fn mcc_risk(mcc: u32) -> f32 {
+fn mcc_risk(mcc: u32) -> i16 {
     match mcc {
-        5411 => 0.15,
-        5812 => 0.30,
-        5912 => 0.20,
-        5944 => 0.45,
-        7801 => 0.80,
-        7802 => 0.75,
-        7995 => 0.85,
-        4511 => 0.35,
-        5311 => 0.25,
-        5999 => 0.50,
-        _ => 0.50,
+        5411 => 1500,
+        5812 => 3000,
+        5912 => 2000,
+        5944 => 4500,
+        7801 => 8000,
+        7802 => 7500,
+        7995 => 8500,
+        4511 => 3500,
+        5311 => 2500,
+        5999 => 5000,
+        _ => 5000,
     }
 }
 
-pub fn vectorize(p: &Payload) -> [f32; 14] {
-    let (minutes_norm, km_cur_norm) = if p.has_last_tx {
-        (
-            round4((p.minutes_since_last / 1440.0).clamp(0.0, 1.0)),
-            round4((p.km_from_current / 1000.0).clamp(0.0, 1.0)),
-        )
+pub fn vectorize(p: &Payload) -> [i16; 16] {
+    let mut v = [0i16; 16];
+    v[0] = clamp01_i16(p.amount / 10_000.0);
+    v[1] = clamp01_i16(p.installments as f32 / 12.0);
+    v[2] = if p.customer_avg_amount > 0.0 {
+        clamp01_i16((p.amount / p.customer_avg_amount) / 10.0)
     } else {
-        (-1.0, -1.0)
+        0
     };
+    v[3] = clamp01_i16(p.hour as f32 / 23.0);
+    v[4] = clamp01_i16(p.weekday as f32 / 6.0);
+    if p.has_last_tx {
+        v[5] = clamp01_i16(p.minutes_since_last / 1440.0);
+        v[6] = clamp01_i16(p.km_from_current / 1000.0);
+    } else {
+        v[5] = -10000;
+        v[6] = -10000;
+    }
+    v[7] = clamp01_i16(p.km_from_home / 1000.0);
+    v[8] = clamp01_i16(p.tx_count_24h as f32 / 20.0);
+    v[9] = if p.is_online { 10000 } else { 0 };
+    v[10] = if p.card_present { 10000 } else { 0 };
+    v[11] = if p.is_unknown_merchant { 10000 } else { 0 };
+    v[12] = mcc_risk(p.mcc);
+    v[13] = clamp01_i16(p.merchant_avg_amount / 10_000.0);
+    // v[14], v[15] = 0 (SIMD padding)
+    v
+}
 
-    [
-        round4((p.amount / 10_000.0).clamp(0.0, 1.0)),
-        round4((p.installments as f32 / 12.0).clamp(0.0, 1.0)),
-        round4(((p.amount / p.customer_avg_amount) / 10.0).clamp(0.0, 1.0)),
-        round4(p.hour as f32 / 23.0),
-        round4(p.weekday as f32 / 6.0),
-        minutes_norm,
-        km_cur_norm,
-        round4((p.km_from_home / 1000.0).clamp(0.0, 1.0)),
-        round4((p.tx_count_24h as f32 / 20.0).clamp(0.0, 1.0)),
-        if p.is_online { 1.0 } else { 0.0 },
-        if p.card_present { 1.0 } else { 0.0 },
-        if p.is_unknown_merchant { 1.0 } else { 0.0 },
-        mcc_risk(p.mcc),
-        round4((p.merchant_avg_amount / 10_000.0).clamp(0.0, 1.0)),
-    ]
+pub fn tag_from_request(p: &Payload) -> usize {
+    (p.card_present as usize) << 3
+        | (p.is_online as usize) << 2
+        | (p.is_unknown_merchant as usize) << 1
+        | (p.has_last_tx as usize)
 }
 
 #[cfg(test)]
@@ -95,62 +103,79 @@ mod tests {
     }
 
     #[test]
-    fn test_round4() {
-        assert_eq!(round4(0.004112), 0.0041);
-        assert_eq!(round4(-1.0), -1.0);
-        assert_eq!(round4(1.0), 1.0);
-        assert!((round4(0.166667) - 0.1667).abs() < 0.00001);
-    }
-
-    #[test]
-    fn test_vectorize_legit() {
+    fn test_vectorize_legit_i16() {
         let v = vectorize(&legit_payload());
-        assert!((v[0] - 0.0041).abs() < 0.0001, "dim0 got {}", v[0]);
-        assert!((v[1] - 0.1667).abs() < 0.0001, "dim1 got {}", v[1]);
-        assert!((v[2] - 0.05).abs() < 0.0001, "dim2 got {}", v[2]);
-        assert!((v[3] - 0.7826).abs() < 0.0001, "dim3 got {}", v[3]);
-        assert!((v[4] - 0.3333).abs() < 0.0001, "dim4 got {}", v[4]);
-        assert_eq!(v[5], -1.0, "dim5 should be -1.0");
-        assert_eq!(v[6], -1.0, "dim6 should be -1.0");
-        assert!((v[7] - 0.0292).abs() < 0.0001, "dim7 got {}", v[7]);
-        assert!((v[8] - 0.15).abs() < 0.0001, "dim8 got {}", v[8]);
-        assert_eq!(v[9], 0.0);
-        assert_eq!(v[10], 1.0);
-        assert_eq!(v[11], 0.0);
-        assert!((v[12] - 0.15).abs() < 0.0001, "dim12 got {}", v[12]);
-        assert!((v[13] - 0.006).abs() < 0.0001, "dim13 got {}", v[13]);
+        assert_eq!(v[0], 41, "dim0: 41.12/10000=0.004112 → 41");
+        assert_eq!(v[1], 1667, "dim1: 2/12=0.1667 → 1667");
+        assert_eq!(v[2], 500, "dim2: (41.12/82.24)/10=0.05 → 500");
+        assert_eq!(v[3], 7826, "dim3: 18/23=0.7826 → 7826");
+        assert_eq!(v[4], 3333, "dim4: 2/6=0.3333 → 3333");
+        assert_eq!(v[5], -10000, "dim5: no last_tx → sentinel");
+        assert_eq!(v[6], -10000, "dim6: no last_tx → sentinel");
+        assert_eq!(v[7], 292, "dim7: 29.233/1000=0.02923 → 292");
+        assert_eq!(v[8], 1500, "dim8: 3/20=0.15 → 1500");
+        assert_eq!(v[9], 0, "dim9: is_online=false");
+        assert_eq!(v[10], 10000, "dim10: card_present=true");
+        assert_eq!(v[11], 0, "dim11: unknown=false");
+        assert_eq!(v[12], 1500, "dim12: mcc 5411 → 0.15 → 1500");
+        assert_eq!(v[13], 60, "dim13: 60.25/10000=0.006025 → 60 (rounded)");
+        assert_eq!(v[14], 0, "dim14: padding");
+        assert_eq!(v[15], 0, "dim15: padding");
     }
 
     #[test]
-    fn test_vectorize_fraud() {
+    fn test_vectorize_fraud_i16() {
         let v = vectorize(&fraud_payload());
-        assert!((v[0] - 0.9506).abs() < 0.0001, "dim0 got {}", v[0]);
-        assert_eq!(v[2], 1.0, "dim2 should be clamped to 1.0");
-        assert_eq!(v[8], 1.0, "dim8 = 20/20 = 1.0");
-        assert_eq!(v[11], 1.0);
-        assert!((v[12] - 0.75).abs() < 0.0001, "dim12 got {}", v[12]);
+        assert_eq!(v[0], 9506, "dim0: 9505.97/10000 clamped → 9506");
+        assert_eq!(v[2], 10000, "dim2: ratio > 10 → clamped to 10000");
+        assert_eq!(v[8], 10000, "dim8: 20/20 = 1.0 → 10000");
+        assert_eq!(v[11], 10000, "dim11: unknown=true → 10000");
+        assert_eq!(v[12], 7500, "dim12: mcc 7802 → 0.75 → 7500");
     }
 
     #[test]
-    fn test_mcc_unknown_defaults_to_0_5() {
-        let mut p = legit_payload();
-        p.mcc = 9999;
-        let v = vectorize(&p);
-        assert!(
-            (v[12] - 0.5).abs() < 0.0001,
-            "unknown mcc should default to 0.5, got {}",
-            v[12]
-        );
-    }
-
-    #[test]
-    fn test_with_last_tx() {
+    fn test_vectorize_with_last_tx() {
         let mut p = legit_payload();
         p.has_last_tx = true;
         p.minutes_since_last = 325.0;
         p.km_from_current = 18.8626;
         let v = vectorize(&p);
-        assert!((v[5] - 0.2257).abs() < 0.0001, "dim5 got {}", v[5]);
-        assert!((v[6] - 0.0189).abs() < 0.0001, "dim6 got {}", v[6]);
+        assert_eq!(v[5], 2257, "dim5: 325/1440=0.2257 → 2257");
+        assert_eq!(v[6], 189, "dim6: 18.8626/1000=0.01886 → 189");
+    }
+
+    #[test]
+    fn test_mcc_unknown_defaults() {
+        let mut p = legit_payload();
+        p.mcc = 9999;
+        let v = vectorize(&p);
+        assert_eq!(v[12], 5000, "unknown mcc → 0.5 → 5000");
+    }
+
+    #[test]
+    fn test_tag_all_16_combinations() {
+        let mut p = legit_payload();
+        // card_present=1, online=0, unknown=0, has_last=0 → tag=8
+        p.card_present = true; p.is_online = false; p.is_unknown_merchant = false; p.has_last_tx = false;
+        assert_eq!(tag_from_request(&p), 8);
+        // card_present=0, online=1, unknown=1, has_last=1 → tag=7
+        p.card_present = false; p.is_online = true; p.is_unknown_merchant = true; p.has_last_tx = true;
+        assert_eq!(tag_from_request(&p), 7);
+        // all zero → tag=0
+        p.card_present = false; p.is_online = false; p.is_unknown_merchant = false; p.has_last_tx = false;
+        assert_eq!(tag_from_request(&p), 0);
+        // all bits → tag=15
+        p.card_present = true; p.is_online = true; p.is_unknown_merchant = true; p.has_last_tx = true;
+        assert_eq!(tag_from_request(&p), 15);
+    }
+
+    #[test]
+    fn test_padding_dims_always_zero() {
+        let v = vectorize(&legit_payload());
+        assert_eq!(v[14], 0);
+        assert_eq!(v[15], 0);
+        let v2 = vectorize(&fraud_payload());
+        assert_eq!(v2[14], 0);
+        assert_eq!(v2[15], 0);
     }
 }
