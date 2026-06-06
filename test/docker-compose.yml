@@ -38,3 +38,23 @@ services:
           memory: 8G
     storage_opt:
       size: "1T"
+
+  k6-stress:
+    image: grafana/k6:latest
+    user: root
+    environment:
+      - K6_NO_USAGE_REPORT=true
+    volumes:
+      - .:/test
+    working_dir: /test
+    command: run /test/stress.js
+    network_mode: "host"
+    profiles:
+      - stress
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 8G
+    storage_opt:
+      size: "1T"
